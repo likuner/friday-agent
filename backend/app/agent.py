@@ -9,6 +9,7 @@ from agentscope.credential import DeepSeekCredential
 from agentscope.event import EventType
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Base64Source, DataBlock, TextBlock, UserMsg
+from agentscope.middleware import TracingMiddleware
 from agentscope.model import DeepSeekChatModel
 from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.tool import FunctionTool, Toolkit
@@ -113,6 +114,8 @@ class AgentService:
         return Agent(
             name="Friday",
             system_prompt=_SYSTEM_PROMPT,
+            # 追踪未配置时该中间件自动短路；配置后产出模型/工具/Agent 调用与 token 用量
+            middlewares=[TracingMiddleware()],
             model=DeepSeekChatModel(
                 credential=credential,
                 model=model,

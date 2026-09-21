@@ -56,7 +56,8 @@ friday-agent/
 │   │   ├── files.py           # 图片上传与安全校验
 │   │   ├── models.py          # ORM 模型
 │   │   ├── schemas.py         # 请求 / 响应模型
-│   │   └── logging_config.py  # 日志初始化
+│   │   ├── logging_config.py  # 日志初始化
+│   │   └── tracing.py         # OpenTelemetry 追踪初始化（OTLP 导出）
 │   ├── scripts/
 │   │   ├── eval_rag.py        # RAG 检索评测（Hit@K / MRR）
 │   │   ├── eval_agent.py      # Agent 工具决策与回答质量评测
@@ -162,6 +163,10 @@ npm run dev
 | `MEDRAG_DB_URL` | `postgresql://meduser:medpass@localhost:5433/medrag` | 文献向量库连接串 |
 | `RAG_TOP_K` | `4` | 单次检索返回条数 |
 | `RAG_MIN_SCORE` | `0.0` | 相似度过滤阈值 |
+| `TRACING_ENABLED` | `false` | 是否开启 OpenTelemetry 追踪 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP 端点；grpc 用 Studio 的 4317，http 填其 Web 端口（自动补 `/v1/traces`） |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc` 或 `http` |
+| `OTEL_SERVICE_NAME` | `friday-agent` | 在追踪后端里显示的服务名 |
 
 ### frontend/.env
 
@@ -209,6 +214,53 @@ npm run dev
 请求体字段：`content`（允许为空，表示只发图片）、`deep_thinking`、`web_search`、`attachments`（文件名数组，最多 9 个）。
 
 ---
+
+## 可观测（AgentScope Studio）
+
+后端通过 **OpenTelemetry** 上报 Agent 运行数据，可接入 [AgentScope Studio](https://github.com/agentscope-ai/agentscope-studio)
+查看 trace 树、token 用量、耗时与完整调用属性。
+
+> 实现说明：AgentScope 1.x 用 `agentscope.init(studio_url=...)` 上报，而本项目使用的
+> **2.0.8 已移除该 API**，改为纯 OpenTelemetry 方案 —— 配好全局 `TracerProvider` 后，
+> 挂在 Agent 上的 `TracingMiddleware` 会自动产出符合 OpenTelemetry GenAI 语义约定的 span。
+> Studio 对外暴露的正是标准 OTLP 端点，因此两者可以直接对接。
+
+### 使用
+
+```bash
+# 1. 安装并启动 Studio（默认 Web 端口 3000、OTLP/gRPC 端口 4317）
+npm install -g @agentscope/studio
+PORT=3001 as_studio          # 3000 被前端占用时换个端口
+
+# 2. 后端开启追踪
+cd backend
+TRACING_ENABLED=true .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
+
+打开 <http://localhost:3001> → **Traces** 页面即可看到每次对话的调用链：
+
+```
+invoke_agent Friday
+├── chat deepseek-chat                # 第一次模型调用（决定是否检索）
+├── execute_tool medical_rag_search
+├── execute_tool medical_rag_search   # 多角度并行检索
+└── chat deepseek-chat                # 带检索结果的第二次模型调用
+```
+
+每条 trace 记录 token 用量（input / output / total）、耗时、模型名、会话 id，
+以及符合 [GenAI 语义约定](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/)的完整属性。
+
+### 接入第三方后端
+
+任何支持 OTLP 的平台都可以对接，改端点即可，例如 Langfuse：
+
+```bash
+export OTEL_EXPORTER_OTLP_PROTOCOL=http
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(public:secret)>"
+```
+
+未开启追踪时 `TracingMiddleware` 会自动短路，对调用链几乎没有开销。
 
 ## 设计要点
 

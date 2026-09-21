@@ -30,7 +30,7 @@
 | **P1** | 验证码存在进程内存 dict | 多副本部署直接失效 |
 | **P1** | `JWT_SECRET` 默认 `change-me`、`/files` 无鉴权、登录无限流 | 安全风险 |
 | **P1** | 上传文件存本地磁盘 | 多副本不一致，需对象存储 |
-| **P1** | 无 token 用量统计与成本可见性 | 成本失控 |
+| **P1** | ~~无 token 用量统计与成本可见性~~ → **已部分解决**：接入 OpenTelemetry 追踪后可在 AgentScope Studio 查看每次调用的 token 用量（落库统计与配额仍未做） | 成本可控性提升 |
 | **P2** | 多模态仅支持图片 | PDF/音频/视频待扩展 |
 | **P2** | 前端无错误边界、无虚拟列表 | 长会话性能与健壮性 |
 
@@ -376,9 +376,17 @@ compose:  docker compose config 校验
 
 ### 6.4 可观测性
 
-- 无 metrics（QPS/延迟/错误率/模型消耗）、无 tracing、无错误上报平台。
+**已解决（tracing）**：已接入 OpenTelemetry 追踪，`TracingMiddleware` 产出符合 GenAI 语义约定的
+span，经 OTLP 导出到 AgentScope Studio，可查看 trace 树（Agent / 模型 / 工具调用）、token 用量、
+耗时与完整属性。见根 README 的「可观测（AgentScope Studio）」章节。
+
+**仍未做**：
+
+- 无 metrics（QPS、P95 延迟、错误率、token 消耗趋势）—— 追踪是逐次明细，缺少聚合指标与告警。
+- 无错误上报平台（Sentry 等），异常只能翻日志。
 - 日志仅本地文件，容器化后随容器销毁而丢失，需集中采集。
 - 缺少关键业务埋点（检索命中率、工具调用成功率、无答案率）。
+- token 用量只在 trace 里，未落库，无法做配额与账单。
 
 ### 6.5 前端
 

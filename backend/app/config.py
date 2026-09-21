@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
     rag_top_k: int = 4
     rag_min_score: float = 0.0
+    # 可观测：OpenTelemetry 追踪（可接入 AgentScope Studio / Jaeger / Langfuse 等 OTLP 后端）
+    tracing_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    # grpc 对应 Studio 的 OTEL_GRPC_PORT(4317)；http 对应其 Web 端口(默认 3000)
+    otel_exporter_otlp_protocol: str = "grpc"
+    otel_service_name: str = "friday-agent"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

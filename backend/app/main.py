@@ -12,14 +12,17 @@ from .db import init_db
 from .chat import router as chat_router
 from .files import FILES_DIR, router as files_router
 from .logging_config import setup_logging
+from .tracing import setup_tracing, shutdown_tracing
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     setup_logging()
+    setup_tracing()
     await init_db()
     logging.getLogger("friday").info("服务启动完成 model_provider=%s", settings.model_provider)
     yield
+    shutdown_tracing()
 
 
 app = FastAPI(title="Friday Agent API", version="0.1.0", lifespan=lifespan)
