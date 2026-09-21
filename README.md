@@ -262,5 +262,6 @@ npx tsc --noEmit   # 类型检查
 
 ## 相关文档
 
+- **问题盘点与演进方案（记忆 / 多模态 / CI-CD / 云上线）**：[`ISSUES.md`](ISSUES.md)
 - 后端细节与接口说明：[`backend/README.md`](backend/README.md)
 - 前端细节：[`frontend/README.md`](frontend/README.md)
