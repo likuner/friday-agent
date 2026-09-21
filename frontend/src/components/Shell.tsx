@@ -9,7 +9,8 @@ import { conversations, createConversation, deleteConversation, type Conversatio
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
 
-// 折叠态样式统一用 sidebar-collapsed: 变体（见 tailwind.config.ts），由 <html data-sidebar> 决定：
+// 折叠态样式统一用 sidebar-collapsed: 变体（见 tailwind.config.ts），由 <html data-sidebar> 决定
+// （该属性由服务端根据 cookie 渲染，见 app/layout.tsx）：
 // 服务端/客户端输出的 class 一致 → 无水合不一致；首帧前已写好属性 → 刷新不闪动。
 export default function Shell({ children }: { children: React.ReactNode }) {
   const { modal } = App.useApp();
@@ -29,7 +30,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     const collapsed = document.documentElement.getAttribute('data-sidebar') === 'collapsed';
     const next = collapsed ? 'expanded' : 'collapsed';
     document.documentElement.setAttribute('data-sidebar', next);
-    localStorage.setItem('friday_sidebar_collapsed', next === 'collapsed' ? '1' : '0');
+    // 写 cookie（而非 localStorage），服务端下次渲染即可直接输出正确状态
+    document.cookie = `friday_sidebar=${next}; path=/; max-age=31536000; SameSite=Lax`;
   };
   const add = async () => { if (!token) return; const item = await createConversation(token); setItems((old) => [item, ...old]); router.push(`/chat/${item.id}`); };
   // 退出登录属于不可逆操作（要重新登录），先弹二次确认

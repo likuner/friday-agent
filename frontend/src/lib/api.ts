@@ -32,8 +32,8 @@ export async function createConversation(token: string, title = '新的对话') 
 export async function renameConversation(token: string, id: string, title: string) { return api<Conversation>(`/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }, token); }
 export async function deleteConversation(token: string, id: string) { return api<void>(`/conversations/${id}`, { method: 'DELETE' }, token); }
 
-export async function streamMessage(token: string, id: string, payload: object, onEvent: (event: StreamEvent) => void) {
-  const response = await fetch(`${API_URL}/conversations/${id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
+export async function streamMessage(token: string, id: string, payload: object, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
+  const response = await fetch(`${API_URL}/conversations/${id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal });
   if (!response.ok || !response.body) throw new Error('流式请求失败');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

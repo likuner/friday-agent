@@ -13,13 +13,28 @@ from sqlalchemy.orm import selectinload
 
 from .agent import agent_service
 from .auth import current_user
-from .db import get_db
+from .db import SessionLocal, get_db
 from .models import Conversation, Message, User
 from .schemas import ChatRequest
 
 logger = logging.getLogger("friday.chat")
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
+
+
+async def _save_partial(conversation_id: UUID, content: str, meta: dict) -> None:
+    """客户端中止生成时，用**独立 session** 落库已生成的部分内容。
+
+    不能复用请求级 session：流被取消时它已随请求一起失效。
+    """
+    async with SessionLocal() as session:
+        message = Message(conversation_id=conversation_id, role="assistant", content=content, meta=meta)
+        session.add(message)
+        await session.commit()
+        logger.info(
+            "节点[中止保存] conversation=%s message_id=%s chars=%s",
+            conversation_id, message.id, len(content),
+        )
 
 
 def sse(event: dict) -> str:
@@ -104,6 +119,28 @@ async def chat(
                 "节点[流式完成] conversation=%s events=%s chars=%s duration=%.2fs",
                 conversation.id, event_count, len(assistant.content), time.monotonic() - started,
             )
+        except (asyncio.CancelledError, GeneratorExit):
+            # 用户点了「停止生成」：把已生成的部分落库（独立 session + shield，
+            # 保证保存任务不被这次取消打断），随后继续向上传播取消。
+            partial = "".join(answer)
+            if partial:
+                meta = {
+                    "deep_thinking": payload.deep_thinking,
+                    "web_search": payload.web_search,
+                    "toolCalls": tool_calls,
+                    "thinking": "".join(thinking),
+                    "stopped": True,
+                }
+                task = asyncio.create_task(_save_partial(conversation.id, partial, meta))
+                try:
+                    await asyncio.shield(task)
+                except BaseException:
+                    pass  # 取消已发生，保存任务仍在后台完成
+            logger.info(
+                "节点[流式中止] conversation=%s events=%s chars=%s duration=%.2fs",
+                conversation.id, event_count, len(partial), time.monotonic() - started,
+            )
+            raise
         except Exception as exc:
             logger.exception(
                 "节点[流式异常] conversation=%s events=%s chars=%s duration=%.2fs error=%s",

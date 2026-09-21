@@ -7,11 +7,12 @@ import './globals.css';
 
 export const metadata: Metadata = { title: 'Friday Agent', description: 'AI Agent 助手' };
 
-// 折叠状态无法在服务端得知（存在 localStorage），因此仍在首帧前用内联脚本写到 <html data-sidebar>，
-// 保证首帧就是最终宽度；主题则走 cookie，由服务端直接渲染 <html data-theme>，两者都不会闪。
-const SIDEBAR_INIT = `try{document.documentElement.setAttribute('data-sidebar',localStorage.getItem('friday_sidebar_collapsed')==='1'?'collapsed':'expanded')}catch(e){document.documentElement.setAttribute('data-sidebar','expanded')}`;
-
+// 主题与侧边栏折叠状态都存 cookie，由服务端直接渲染到 <html> 上：
+// - 首帧即最终外观，不会出现「展开→收起」的闪动
+// - 不需要在组件树里渲染 <script>（React 19 会报 "Encountered a script tag"）
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const theme = (await cookies()).get('friday_theme')?.value === 'dark' ? 'dark' : 'light';
-  return <html lang="zh-CN" data-theme={theme} suppressHydrationWarning><body suppressHydrationWarning><script dangerouslySetInnerHTML={{ __html: SIDEBAR_INIT }} /><AntdRegistry><Providers initialTheme={theme}>{children}</Providers></AntdRegistry></body></html>;
+  const jar = await cookies();
+  const theme = jar.get('friday_theme')?.value === 'dark' ? 'dark' : 'light';
+  const sidebar = jar.get('friday_sidebar')?.value === 'collapsed' ? 'collapsed' : 'expanded';
+  return <html lang="zh-CN" data-theme={theme} data-sidebar={sidebar} suppressHydrationWarning><body suppressHydrationWarning><AntdRegistry><Providers initialTheme={theme}>{children}</Providers></AntdRegistry></body></html>;
 }
