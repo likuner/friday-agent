@@ -1,6 +1,6 @@
 # Friday Agent
 
-一个面向**医学问答**的 AI Agent 应用：FastAPI + AgentScope 后端，Next.js + Ant Design 前端。
+一个名字叫做 Friday 的 AI Agent 应用：FastAPI + AgentScope 后端，Next.js + Ant Design 前端。
 支持流式对话、深度思考、医学文献 RAG 检索、多模态图片输入与深色主题。
 
 ---
