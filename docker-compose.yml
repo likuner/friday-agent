@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: friday-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: friday_agent
+      POSTGRES_USER: friday
+      POSTGRES_PASSWORD: friday
+    ports:
+      - "5432:5432"
+    volumes:
+      - friday_agent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U friday -d friday_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  friday_agent_pgdata:

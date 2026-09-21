@@ -1,0 +1,48 @@
+# ===== 环境变量 / 密钥（绝不提交）=====
+# 注意：规则顺序有意义，先忽略所有 .env*，再显式放行 .env.example
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== 运行期数据 =====
+# 日志
+*.log
+backend/logs/
+
+# 用户上传的图片（属于运行数据，不入库）
+backend/files/
+
+# 数据库文件
+*.db
+*.sqlite3
+*.db-journal
+
+# ===== Node / Next.js =====
+node_modules/
+.next/
+out/
+build/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# ===== 编辑器 / 系统 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

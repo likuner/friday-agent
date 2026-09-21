@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   设计 token：颜色统一走 CSS 变量（R G B 通道值，便于 Tailwind 的 /透明度）
+   主题切换只改 <html data-theme="dark">，不改任何组件代码。
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  --canvas: 244 246 253;        /* 页面底色 */
+  --panel: 251 252 255;         /* 侧边栏渐变起点 */
+  --panel-to: 243 246 255;      /* 侧边栏渐变终点 */
+  --surface: 255 255 255;       /* 卡片 / 输入框 / 顶栏 */
+  --soft: 248 250 255;          /* 次级面板 */
+  --hover: 237 241 250;         /* 悬停底色 */
+  --brand-soft: 238 242 255;    /* 品牌浅底（选中、标签） */
+
+  --line: 230 235 247;          /* 常规描边 */
+  --line-strong: 220 227 240;   /* 强调描边 */
+  --line-brand: 217 226 255;    /* 品牌描边 */
+  --line-hover: 191 208 255;
+  --line-focus: 169 188 255;
+  --accent-line: 185 198 244;
+
+  --ink: 16 24 43;              /* 主文字 */
+  --ink-soft: 28 42 85;
+  --body: 66 75 94;             /* 正文 */
+  --muted: 122 134 153;         /* 次要文字 */
+  --muted-weak: 152 162 179;    /* 更弱文字 */
+  --weak: 91 102 120;
+  --quote-text: 85 96 122;
+
+  --brand: 77 107 254;
+  --brand-text: 59 84 217;      /* 品牌色文字（深色下需提亮） */
+
+  --quote-bg: 244 247 255;
+  --table-head: 242 245 255;
+  --code-bg: 15 23 41;
+  --marker: 147 163 232;
+  --scroll-thumb: 204 214 238;
+  --scroll-thumb-hover: 169 184 221;
+
+  --overlay: 15 27 61;          /* 移动端抽屉遮罩 */
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* 整体比纯黑提亮约一倍、并降低蓝色饱和：底色更柔和，层次靠明度递增而不是靠重对比 */
+  --canvas: 21 24 31;        /* #15181F */
+  --panel: 27 31 40;         /* #1B1F28 */
+  --panel-to: 24 28 36;      /* #181C24 */
+  --surface: 31 36 46;       /* #1F242E */
+  --soft: 35 40 51;          /* #232833 */
+  --hover: 42 48 60;         /* #2A303C */
+  --brand-soft: 34 45 80;    /* #222D50 */
+
+  --line: 46 52 65;          /* #2E3441 */
+  --line-strong: 54 61 76;   /* #363D4C */
+  --line-brand: 58 74 126;
+  --line-hover: 72 94 166;
+  --line-focus: 96 118 198;
+  --accent-line: 68 84 134;
+
+  --ink: 227 232 242;        /* #E3E8F2 略降亮度，长时间阅读不刺眼 */
+  --ink-soft: 201 212 238;
+  --body: 185 193 208;       /* #B9C1D0 */
+  --muted: 147 156 175;      /* #939CAF */
+  --muted-weak: 123 132 150;
+  --weak: 162 170 185;
+  --quote-text: 172 181 199;
+
+  --brand: 122 148 255;      /* #7A94FF */
+  --brand-text: 158 178 255;
+
+  --quote-bg: 31 37 53;
+  --table-head: 33 39 55;
+  --code-bg: 16 19 26;       /* #10131A */
+  --marker: 122 138 196;
+  --scroll-thumb: 58 65 84;
+  --scroll-thumb-hover: 78 87 110;
+
+  --overlay: 0 0 0;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  color: rgb(var(--ink));
+  background: rgb(var(--canvas));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font: inherit; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--scroll-thumb)); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--scroll-thumb-hover)); }
+::-webkit-scrollbar-track { background: transparent; }
+.scroll-hide { scrollbar-width: none; }
+.scroll-hide::-webkit-scrollbar { display: none; }
+
+@keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.msg-in { animation: msg-in .28s ease-out both; }
+
+/* 注意（Turbopack dev 环境）：在 .tsx 里新增 Tailwind 类有时不会触发 CSS 重建，
+   表现为新类名不在产物 CSS 里、样式不生效。改一下本文件即可强制重建。 */
+
+/* Markdown 排版 */
+.md { font-size: 14.5px; line-height: 1.9; color: rgb(var(--ink)); }
+.md p { margin: 0 0 12px; }
+.md p:last-child { margin-bottom: 0; }
+.md ul, .md ol { margin: 0 0 12px; padding-left: 22px; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 4px 0; }
+.md li::marker { color: rgb(var(--marker)); }
+.md li > p { margin: 0; }
+.md h1, .md h2, .md h3, .md h4 { margin: 20px 0 10px; font-weight: 650; line-height: 1.4; color: rgb(var(--ink)); }
+.md h1 { font-size: 1.4em; }
+.md h2 { font-size: 1.26em; padding-bottom: 4px; border-bottom: 1px solid rgb(var(--line)); }
+.md h3, .md h4 { font-size: 1.1em; }
+.md hr { border: 0; border-top: 1px solid rgb(var(--line)); margin: 16px 0; }
+.md pre { margin: 0 0 12px; padding: 12px 14px; background: rgb(var(--code-bg)); color: #e6edff; border-radius: 12px; overflow-x: auto; white-space: pre; font-size: 13px; line-height: 1.7; }
+.md pre code { background: none; border: 0; padding: 0; color: inherit; }
+.md blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 3px solid rgb(var(--accent-line)); background: rgb(var(--quote-bg)); border-radius: 0 10px 10px 0; color: rgb(var(--quote-text)); }
+.md a { color: rgb(var(--brand)); text-decoration: none; border-bottom: 1px dashed rgb(var(--accent-line)); }
+.md table { border-collapse: collapse; margin: 0 0 12px; width: 100%; font-size: 13.5px; }
+.md th, .md td { border: 1px solid rgb(var(--line)); padding: 6px 10px; text-align: left; }
+.md th { background: rgb(var(--table-head)); }
+.md code { background: rgb(var(--brand-soft)); border: 1px solid rgb(var(--line)); border-radius: 6px; padding: 1px 6px; color: rgb(var(--brand-text)); font-size: .92em; }
