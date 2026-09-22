@@ -3,7 +3,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -125,3 +125,40 @@ async def delete_conversation(
     await db.delete(conversation)
     await db.commit()
     logger.info("节点[删除对话] user=%s conversation=%s", user.username, conversation_id)
+
+
+@router.delete("/{conversation_id}/messages/{message_id}")
+async def truncate_messages(
+    conversation_id: UUID,
+    message_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除指定消息及其后的全部消息（「编辑重发」截断历史用），返回删除条数。
+
+    消息按 created_at 排序，截断条件为 >= 目标消息时间；同轮对话的消息提交时间
+    均有微秒级间隔，不会误删更早的消息。
+    """
+    target = await db.scalar(
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(
+            Message.id == message_id,
+            Conversation.id == conversation_id,
+            Conversation.user_id == user.id,
+        )
+    )
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在")
+    result = await db.execute(
+        delete(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.created_at >= target.created_at,
+        )
+    )
+    await db.commit()
+    logger.info(
+        "节点[截断消息] user=%s conversation=%s from=%s deleted=%s",
+        user.username, conversation_id, message_id, result.rowcount,
+    )
+    return {"deleted": result.rowcount}

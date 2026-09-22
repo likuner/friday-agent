@@ -81,6 +81,7 @@ API 文档：<http://localhost:8000/docs>
 - `POST /api/conversations`：创建对话
 - `GET /api/conversations/{id}`：获取对话详情
 - `POST /api/conversations/{id}/messages`：SSE 流式发送消息
+- `DELETE /api/conversations/{id}/messages/{message_id}`：截断该条消息及其后全部消息（前端「编辑重发」用）
 
 ## 医学 RAG
 

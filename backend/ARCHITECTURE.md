@@ -44,7 +44,7 @@ backend/
     ├── auth.py                 # 密码哈希(argon2)、JWT 签发/校验、current_user 依赖
     ├── auth_routes.py          # /api/auth 路由：captcha、register、login、me
     ├── captcha.py              # 图形验证码：Pillow 生成 + HMAC 签名 + 进程内存存储
-    ├── conversations.py        # /api/conversations 路由：列表/创建/详情/重命名/删除
+    ├── conversations.py        # /api/conversations 路由：列表/创建/详情/重命名/删除 + 消息截断（编辑重发）
     ├── chat.py                 # /api/conversations/{id}/messages：SSE 流式对话（核心）
     ├── agent.py                # AgentService：AgentScope Agent 组装（开关组合懒加载）+ 事件流适配（核心）
     ├── rag.py                  # 医学文献向量检索：智谱 embedding + pgvector（核心）
@@ -119,6 +119,7 @@ backend/
 
 | type | 字段 | 含义 | 前端处理 |
 | --- | --- | --- | --- |
+| `sent` | `message_id` | 流首事件：用户消息落库后的真实 id（chat.py 直发，非 agent 事件） | 替换乐观渲染的本地 id（编辑重发按 id 截断的前提） |
 | `text` | `content` | 正文增量（token 级） | 进打字机缓冲，逐步上屏 |
 | `thinking` | `content` | 深度思考增量 | 单独收集，折叠展示（不入正文） |
 | `tool_call` | `name`, `query` | 模型发起了工具调用（`query` 为解析出的检索词） | 渲染检索 chip：`medical_rag_search` →「已检索」，`web_search` →「联网搜索」 |
@@ -142,7 +143,9 @@ backend/
   `asyncio.shield` 把已生成的部分内容带 `stopped: true` 标记落库（`_save_partial()`），
   然后继续向上传播取消；
 - **异常路径**：`logger.exception` 记录全节点上下文（事件数/字数/耗时），`db.rollback()` 后
-  下发 `error` 事件给前端。
+  下发 `error` 事件给前端；
+- **消息截断**（conversations.py `DELETE /{id}/messages/{mid}`）：删除指定消息及其后全部
+  消息（`created_at >=` 目标），前端「编辑重发」先截断再重发；跨用户访问返回 404。
 
 ### 4.4 agent.py 的关键实现点
 

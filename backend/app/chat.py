@@ -80,6 +80,9 @@ async def chat(
         started = time.monotonic()
         logger.info("节点[流式开始] conversation=%s", conversation.id)
         try:
+            # 流首事件：回传用户消息落库后的真实 id。前端发送时用本地随机 id 乐观渲染，
+            # 替换成库里的 id 后，「编辑重发」的截断接口才能按 id 定位到这条消息。
+            yield sse({"type": "sent", "message_id": str(user_message.id)})
             async for event in agent_service.stream(history, payload.deep_thinking, payload.web_search, payload.attachments):
                 # 思考过程单独收集，不混进正文，前端才能折叠展示
                 if event.get("type") == "thinking":

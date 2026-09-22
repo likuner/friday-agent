@@ -31,6 +31,8 @@ export async function conversation(token: string, id: string) { return api<Conve
 export async function createConversation(token: string, title = '新的对话') { return api<Conversation>('/conversations', { method: 'POST', body: JSON.stringify({ title }) }, token); }
 export async function renameConversation(token: string, id: string, title: string) { return api<Conversation>(`/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }, token); }
 export async function deleteConversation(token: string, id: string) { return api<void>(`/conversations/${id}`, { method: 'DELETE' }, token); }
+// 编辑重发用：删除指定消息及其后的全部消息，返回删除条数
+export async function truncateMessages(token: string, conversationId: string, messageId: string) { return api<{ deleted: number }>(`/conversations/${conversationId}/messages/${messageId}`, { method: 'DELETE' }, token); }
 
 export async function streamMessage(token: string, id: string, payload: object, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
   const response = await fetch(`${API_URL}/conversations/${id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload), signal });

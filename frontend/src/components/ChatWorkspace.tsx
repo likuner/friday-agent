@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowDownOutlined, CloseOutlined, CopyOutlined, DownOutlined, GlobalOutlined, LikeFilled, LikeOutlined, PaperClipOutlined, PictureOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
+import { ArrowDownOutlined, CloseOutlined, CopyOutlined, DownOutlined, EditOutlined, GlobalOutlined, LikeFilled, LikeOutlined, PaperClipOutlined, PictureOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
 import { App, Button, Image as AntdImage } from 'antd';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { conversation, createConversation, fileUrl, streamMessage, uploadImage, type Message, type ToolCall, type UploadedFile } from '@/lib/api';
+import { conversation, createConversation, fileUrl, streamMessage, truncateMessages, uploadImage, type Message, type ToolCall, type UploadedFile } from '@/lib/api';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
@@ -68,18 +68,57 @@ function MessageImages({ names }: { names: string[] }) {
   );
 }
 
-// 用户消息：图片单独展示在气泡之外，只有文字进蓝色气泡
-function UserBubble({ item }: { item: Message }) {
+// 用户消息：图片单独展示在气泡之外，只有文字进蓝色气泡；气泡下方提供复制与编辑重发
+function UserMessage({ item, busy, onCopy, onResend }: { item: Message; busy: boolean; onCopy: (text: string) => void; onResend: (item: Message, content: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.content);
   const names = (item.meta?.attachments as string[]) || [];
   if (!names.length && !item.content) return null;
+
+  const cancel = () => { setEditing(false); setDraft(item.content); };
+  const submit = () => {
+    if (!draft.trim()) return;
+    setEditing(false);
+    onResend(item, draft);
+  };
+
   return (
     <div className="flex max-w-[85%] flex-col items-end gap-2">
       <MessageImages names={names} />
-      {item.content && (
-        <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-[#4d6bfe] to-[#7288ff] px-4 py-3 text-white shadow-[0_12px_28px_-14px_rgba(77,107,254,.75)]">
+      {editing ? (
+        <div className="w-full rounded-2xl border border-line-focus bg-surface p-3 shadow-[0_12px_28px_-18px_rgba(77,107,254,.6)]">
           <div className="mb-1 text-xs font-medium text-[#dbe4ff]">你</div>
-          <div className="whitespace-pre-wrap text-[14.5px] leading-7">{item.content}</div>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') cancel();
+              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); }
+            }}
+            rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+            autoFocus
+            className="block w-full resize-none border-0 bg-transparent py-1 text-[14.5px] leading-6 outline-none"
+          />
+          <div className="mt-1 flex items-center justify-end gap-1 text-xs">
+            <button type="button" onClick={cancel} className="rounded px-2 py-1 text-muted transition-colors hover:bg-hover">取消</button>
+            <button type="button" onClick={submit} disabled={!draft.trim()} title="保存后会删除这条之后的消息并重新发送" className="rounded px-2 py-1 font-medium text-brand transition-colors hover:bg-hover disabled:opacity-50">保存并重发</button>
+          </div>
         </div>
+      ) : (
+        <>
+          {item.content && (
+            <div className="rounded-2xl rounded-tr-md bg-gradient-to-br from-[#4d6bfe] to-[#7288ff] px-4 py-3 text-white shadow-[0_12px_28px_-14px_rgba(77,107,254,.75)]">
+              <div className="mb-1 text-xs font-medium text-[#dbe4ff]">你</div>
+              <div className="whitespace-pre-wrap text-[14.5px] leading-7">{item.content}</div>
+            </div>
+          )}
+          <div className="flex items-center gap-1 text-xs text-muted-weak">
+            {item.content && (
+              <button onClick={() => onCopy(item.content)} className="rounded px-2 py-1 transition-colors hover:bg-hover"><CopyOutlined /> 复制</button>
+            )}
+            <button onClick={() => { setDraft(item.content); setEditing(true); }} disabled={busy} title={busy ? '生成中暂不能编辑' : '编辑这条提问并重新发送（该条之后的消息会被删除）'} className="rounded px-2 py-1 transition-colors hover:bg-hover disabled:opacity-50"><EditOutlined /> 编辑重发</button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -97,6 +136,15 @@ function ThinkingPanel({ text, streaming, open, onToggle }: { text: string; stre
         {open ? <UpOutlined className="text-[10px]" /> : <DownOutlined className="text-[10px]" />}
       </button>
       {open && <div className="scroll-hide max-h-[320px] overflow-y-auto whitespace-pre-wrap border-t border-line px-3 py-2 text-[13px] leading-6 text-body">{text}</div>}
+    </div>
+  );
+}
+
+// 流式期间的状态提示：无正文时的占位（正在思考/正在检索），或调用工具期间显示在已有正文下方
+function StreamingHint({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 py-1 text-[14.5px] text-muted">
+      <LoadingOutlined spin className="text-[#4d6bfe]" /> {label}<span className="thinking-dot">…</span>
     </div>
   );
 }
@@ -138,6 +186,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const flushTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // 正在流式输出的 assistant 消息 id：用于判断思考面板该展开还是收起
   const [streamingId, setStreamingId] = useState<string | null>(null);
+  // 模型正在调用工具（tool_call 事件后、正文恢复流式前）：期间正文下方持续显示「正在检索…」
+  const [toolRunning, setToolRunning] = useState(false);
   // 用户手动展开/收起思考过程的覆盖值
   const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
   // 当前流式请求的中止控制器（「停止生成」按钮使用）
@@ -221,10 +271,13 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     setUploading(false);
   };
 
-  const send = async () => {
-    const content = input.trim(); if ((!content && !attachments.length) || loading || !token) return;
-    const sentAttachments = attachments.map((item) => item.name);
-    setLoading(true); setInput(''); setAttachments([]);
+  // override：编辑重发时直接给定内容与附件名，不读取（也不清空）输入框里的草稿
+  const send = async (override?: { content: string; attachments: string[] }) => {
+    const content = (override?.content ?? input).trim();
+    const sentAttachments = override ? override.attachments : attachments.map((item) => item.name);
+    if ((!content && !sentAttachments.length) || loading || !token) return;
+    setLoading(true);
+    if (!override) { setInput(''); setAttachments([]); }
     stick.current = true; setAtBottom(true);
     let target = id;
     if (!target) { const created = await createConversation(token, content.slice(0, 30)); target = created.id; setId(target); setTitle(created.title); window.history.replaceState(null, '', `/chat/${target}`); }
@@ -234,6 +287,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     streamBuffer.current = '';
     thinkingBuffer.current = '';
     setStreamingId(assistantId);
+    setToolRunning(false);
     // 打字机节奏放缓冲区：每个 token 都 setState 会导致整列表+Markdown 高频重渲染。
     // flusher 必须随发送立即启动，否则流式期间界面会一直停在"正在思考…"。
     const streamDone = { current: false };
@@ -262,7 +316,10 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     }, 50);
     const controller = new AbortController();
     abortRef.current = controller;
-    try { await streamMessage(token, target, { content, deep_thinking: thinking, web_search: searching, attachments: sentAttachments }, (event) => { if (event.type === 'thinking') thinkingBuffer.current += event.content || ''; else if (event.type === 'text') streamBuffer.current += event.content || ''; else if (event.type === 'tool_call') setMessages((old) => old.map((item) => item.id === assistantId ? { ...item, meta: { ...item.meta, toolCalls: [...((item.meta?.toolCalls as ToolCall[]) || []), { name: event.name || 'medical_rag_search', query: event.query }] } } : item)); }, controller.signal); } catch (error) {
+    try { await streamMessage(token, target, { content, deep_thinking: thinking, web_search: searching, attachments: sentAttachments }, (event) => {
+      // 流首 sent 事件：把乐观渲染的本地 id 替换成库中真实 id，编辑重发的截断才能按 id 定位
+      if (event.type === 'sent' && event.message_id) { setMessages((old) => old.map((row) => row.id === userMessage.id ? { ...row, id: event.message_id! } : row)); return; }
+      if (event.type === 'thinking') thinkingBuffer.current += event.content || ''; else if (event.type === 'text') { setToolRunning(false); streamBuffer.current += event.content || ''; } else if (event.type === 'tool_call') { setToolRunning(true); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, toolCalls: [...((row.meta?.toolCalls as ToolCall[]) || []), { name: event.name || 'medical_rag_search', query: event.query }] } } : row)); } }, controller.signal); } catch (error) {
       // 用户主动中止不算错误：保留已生成的部分并标记
       if (error instanceof DOMException && error.name === 'AbortError') {
         setMessages((old) => old.map((item) => item.id === assistantId ? { ...item, meta: { ...item.meta, stopped: true } } : item));
@@ -270,9 +327,24 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
       } else {
         message.error(error instanceof Error ? error.message : '发送失败');
       }
-    } finally { abortRef.current = null; streamDone.current = true; await flushed; setLoading(false); setStreamingId(null); }
+    } finally { abortRef.current = null; streamDone.current = true; await flushed; setLoading(false); setStreamingId(null); setToolRunning(false); }
   };
 
-  return <div className="flex h-full min-w-0 flex-col bg-canvas"><header className="flex h-[60px] shrink-0 items-center justify-between border-b border-line/80 bg-surface/75 px-4 backdrop-blur-md sm:px-6"><div className="flex min-w-0 items-center gap-1.5"><button title="打开菜单" onClick={() => setSidebarOpen(true)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-body hover:bg-hover md:hidden"><MenuOutlined /></button><div className="min-w-0"><h1 className="truncate text-[15px] font-medium">{title}</h1><span className="text-xs text-muted-weak">{messages.length} 条消息</span></div></div><ThemeToggle /></header><div className="relative flex min-h-0 flex-1 flex-col"><div ref={scroller} onScroll={handleScroll} className="scroll-hide min-h-0 flex-1 overflow-y-auto"><div className="mx-auto w-full max-w-[800px] space-y-7 px-4 py-7 sm:px-6">{messages.length === 0 ? <div className="pt-14 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#4d6bfe] text-2xl text-white"><RobotIcon /></div><h2 className="mt-5 text-2xl font-semibold">Hi，我是 Friday</h2><p className="mx-auto mt-2 max-w-[460px] text-[13.5px] leading-6 text-muted">我可以帮你写代码、读文件、写作、做方案，也能联网查最新资料。</p></div> : messages.map((item) => { if (item.role === 'user') return <div key={item.id} className="msg-in flex justify-end"><UserBubble item={item} /></div>; const thinkingText = (item.meta?.thinking as string) || ''; const isStreamingThis = item.id === streamingId; const thinkingExpanded = thinkingOpen[item.id] ?? isStreamingThis; return <div key={item.id} className="msg-in flex gap-3"><div className="min-w-0 flex-1"><div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted"><span className="grid h-5 w-5 place-items-center rounded-md bg-gradient-to-br from-[#4d6bfe] to-[#7c94ff] text-[9px] text-white">F</span>Friday Agent</div><ToolCallChips calls={(item.meta?.toolCalls as ToolCall[]) || []} />{thinkingText && <ThinkingPanel text={thinkingText} streaming={isStreamingThis} open={thinkingExpanded} onToggle={() => setThinkingOpen((old) => ({ ...old, [item.id]: !thinkingExpanded }))} />}{item.content ? <div className="md"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>{item.content}</ReactMarkdown><div className="mt-2 flex gap-1 text-xs text-muted-weak"><button onClick={() => copyText(item.content)} className="rounded px-2 py-1 transition-colors hover:bg-hover"><CopyOutlined /> 复制</button><button onClick={() => toggleLike(item.id)} className={`rounded px-2 py-1 transition-colors hover:bg-hover ${liked[item.id] ? 'text-brand' : ''}`}>{liked[item.id] ? <LikeFilled /> : <LikeOutlined />} 有帮助</button></div></div> : <div className="flex items-center gap-2 py-1 text-[14.5px] text-muted"><LoadingOutlined spin className="text-[#4d6bfe]" /> 正在思考<span className="thinking-dot">…</span></div>}{item.meta?.stopped ? <div className="mt-2 text-xs text-muted-weak">已停止生成</div> : null}</div></div>; })}<div ref={bottom} /></div></div>{!atBottom && <button onClick={jumpToBottom} title="回到底部" aria-label="回到底部" className="absolute bottom-4 left-1/2 z-10 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-line-strong bg-surface text-muted shadow-[0_10px_24px_-12px_rgba(20,35,80,.6)] transition-colors hover:bg-hover hover:text-ink"><ArrowDownOutlined /></button>}</div><div className="shrink-0 px-4 pb-5 pt-1 sm:px-6"><div className="mx-auto max-w-[800px] rounded-[24px] border border-line-strong bg-surface/95 px-4 pb-2.5 pt-3 shadow-[0_18px_44px_-24px_rgba(20,35,80,.35)] backdrop-blur transition-all duration-200 focus-within:border-line-focus focus-within:shadow-[0_18px_46px_-20px_rgba(77,107,254,.5)]">{attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2">{attachments.map((item) => <div key={item.name} className="relative"><img src={fileUrl(item.name)} alt="待发送图片" className="h-16 w-16 rounded-lg border border-line object-cover" /><button type="button" title="移除图片" onClick={() => setAttachments((old) => old.filter((row) => row.name !== item.name))} className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full border border-line bg-surface text-[10px] text-muted hover:text-ink"><CloseOutlined /></button></div>)}</div>}<textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }} rows={2} placeholder="给 Friday 发送消息…" className="block w-full resize-none border-0 bg-transparent py-1 text-[14.5px] leading-6 outline-none" /><div className="mt-2 flex items-center gap-2"><button title={`上传图片（最多 ${MAX_ATTACHMENTS} 张）`} onClick={() => fileInput.current?.click()} disabled={uploading} className="grid h-8 w-8 place-items-center rounded-lg text-weak hover:bg-hover disabled:opacity-50">{uploading ? <LoadingOutlined spin /> : <PaperClipOutlined />}</button><input ref={fileInput} type="file" accept="image/*" multiple className="hidden" onChange={pickImage} />{SHOW_DEEP_THINKING && <button onClick={() => setThinking(!thinking)} className={`rounded-full border px-3 py-1 text-xs ${thinking ? 'border-[#4d6bfe] bg-brand-soft text-brand-text' : 'border-line-strong text-weak'}`}><BulbOutlined /> 深度思考</button>}{SHOW_WEB_SEARCH && <button onClick={() => setSearching(!searching)} className={`rounded-full border px-3 py-1 text-xs ${searching ? 'border-[#4d6bfe] bg-brand-soft text-brand-text' : 'border-line-strong text-weak'}`}><GlobalOutlined /> 联网搜索</button>}{loading ? <button type="button" onClick={stopGenerating} title="停止生成" aria-label="停止生成" className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-full border border-line-brand bg-brand-soft text-brand-text shadow-[0_6px_16px_-10px_rgba(77,107,254,.9)] transition-colors hover:border-line-hover hover:bg-hover hover:text-ink"><span className="block h-3 w-3 rounded-[3px] bg-current" /></button> : <Button type="primary" shape="circle" icon={<SendOutlined />} disabled={!input.trim() && !attachments.length} onClick={send} className="ml-auto h-9 w-9 border-0 bg-gradient-to-br from-[#4d6bfe] to-[#7288ff] shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)] transition-transform hover:scale-105" />}</div></div><p className="mt-2 text-center text-[11.5px] text-muted-weak">内容由 AI 生成，请仔细甄别</p></div></div>;
+  // 编辑重发：把该条及其后的消息截断（前端 + 后端），再以编辑后的内容走正常发送链路
+  const resendFrom = async (item: Message, content: string) => {
+    if (loading || !token || !id) return;
+    const index = messages.findIndex((row) => row.id === item.id);
+    if (index < 0) return;
+    try {
+      await truncateMessages(token, id, item.id);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '截断历史消息失败，请稍后重试');
+      return;
+    }
+    setMessages((old) => old.slice(0, index));
+    await send({ content, attachments: (item.meta?.attachments as string[]) || [] });
+  };
+
+  return <div className="flex h-full min-w-0 flex-col bg-canvas"><header className="flex h-[60px] shrink-0 items-center justify-between border-b border-line/80 bg-surface/75 px-4 backdrop-blur-md sm:px-6"><div className="flex min-w-0 items-center gap-1.5"><button title="打开菜单" onClick={() => setSidebarOpen(true)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-body hover:bg-hover md:hidden"><MenuOutlined /></button><div className="min-w-0"><h1 className="truncate text-[15px] font-medium">{title}</h1><span className="text-xs text-muted-weak">{messages.length} 条消息</span></div></div><ThemeToggle /></header><div className="relative flex min-h-0 flex-1 flex-col"><div ref={scroller} onScroll={handleScroll} className="scroll-hide min-h-0 flex-1 overflow-y-auto"><div className="mx-auto w-full max-w-[800px] space-y-7 px-4 py-7 sm:px-6">{messages.length === 0 ? <div className="pt-14 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#4d6bfe] text-2xl text-white"><RobotIcon /></div><h2 className="mt-5 text-2xl font-semibold">Hi，我是 Friday</h2><p className="mx-auto mt-2 max-w-[460px] text-[13.5px] leading-6 text-muted">我可以帮你写代码、读文件、写作、做方案，也能联网查最新资料。</p></div> : messages.map((item) => { if (item.role === 'user') return <div key={item.id} className="msg-in flex justify-end"><UserMessage item={item} busy={loading} onCopy={copyText} onResend={resendFrom} /></div>; const thinkingText = (item.meta?.thinking as string) || ''; const isStreamingThis = item.id === streamingId; const thinkingExpanded = thinkingOpen[item.id] ?? isStreamingThis; return <div key={item.id} className="msg-in flex gap-3"><div className="min-w-0 flex-1"><div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted"><span className="grid h-5 w-5 place-items-center rounded-md bg-gradient-to-br from-[#4d6bfe] to-[#7c94ff] text-[9px] text-white">F</span>Friday Agent</div><ToolCallChips calls={(item.meta?.toolCalls as ToolCall[]) || []} />{thinkingText && <ThinkingPanel text={thinkingText} streaming={isStreamingThis} open={thinkingExpanded} onToggle={() => setThinkingOpen((old) => ({ ...old, [item.id]: !thinkingExpanded }))} />}{item.content ? <div className="md"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>{item.content}</ReactMarkdown>{isStreamingThis && toolRunning && <div className="mt-1"><StreamingHint label="正在检索" /></div>}<div className="mt-2 flex gap-1 text-xs text-muted-weak"><button onClick={() => copyText(item.content)} className="rounded px-2 py-1 transition-colors hover:bg-hover"><CopyOutlined /> 复制</button><button onClick={() => toggleLike(item.id)} className={`rounded px-2 py-1 transition-colors hover:bg-hover ${liked[item.id] ? 'text-brand' : ''}`}>{liked[item.id] ? <LikeFilled /> : <LikeOutlined />} 有帮助</button></div></div> : <StreamingHint label={isStreamingThis && toolRunning ? '正在检索' : '正在思考'} />}{item.meta?.stopped ? <div className="mt-2 text-xs text-muted-weak">已停止生成</div> : null}</div></div>; })}<div ref={bottom} /></div></div>{!atBottom && <button onClick={jumpToBottom} title="回到底部" aria-label="回到底部" className="absolute bottom-4 left-1/2 z-10 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-line-strong bg-surface text-muted shadow-[0_10px_24px_-12px_rgba(20,35,80,.6)] transition-colors hover:bg-hover hover:text-ink"><ArrowDownOutlined /></button>}</div><div className="shrink-0 px-4 pb-5 pt-1 sm:px-6"><div className="mx-auto max-w-[800px] rounded-[24px] border border-line-strong bg-surface/95 px-4 pb-2.5 pt-3 shadow-[0_18px_44px_-24px_rgba(20,35,80,.35)] backdrop-blur transition-all duration-200 focus-within:border-line-focus focus-within:shadow-[0_18px_46px_-20px_rgba(77,107,254,.5)]">{attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2">{attachments.map((item) => <div key={item.name} className="relative"><img src={fileUrl(item.name)} alt="待发送图片" className="h-16 w-16 rounded-lg border border-line object-cover" /><button type="button" title="移除图片" onClick={() => setAttachments((old) => old.filter((row) => row.name !== item.name))} className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full border border-line bg-surface text-[10px] text-muted hover:text-ink"><CloseOutlined /></button></div>)}</div>}<textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }} rows={2} placeholder="给 Friday 发送消息…" className="block w-full resize-none border-0 bg-transparent py-1 text-[14.5px] leading-6 outline-none" /><div className="mt-2 flex items-center gap-2"><button title={`上传图片（最多 ${MAX_ATTACHMENTS} 张）`} onClick={() => fileInput.current?.click()} disabled={uploading} className="grid h-8 w-8 place-items-center rounded-lg text-weak hover:bg-hover disabled:opacity-50">{uploading ? <LoadingOutlined spin /> : <PaperClipOutlined />}</button><input ref={fileInput} type="file" accept="image/*" multiple className="hidden" onChange={pickImage} />{SHOW_DEEP_THINKING && <button onClick={() => setThinking(!thinking)} className={`rounded-full border px-3 py-1 text-xs ${thinking ? 'border-[#4d6bfe] bg-brand-soft text-brand-text' : 'border-line-strong text-weak'}`}><BulbOutlined /> 深度思考</button>}{SHOW_WEB_SEARCH && <button onClick={() => setSearching(!searching)} className={`rounded-full border px-3 py-1 text-xs ${searching ? 'border-[#4d6bfe] bg-brand-soft text-brand-text' : 'border-line-strong text-weak'}`}><GlobalOutlined /> 联网搜索</button>}{loading ? <button type="button" onClick={stopGenerating} title="停止生成" aria-label="停止生成" className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-full border border-line-brand bg-brand-soft text-brand-text shadow-[0_6px_16px_-10px_rgba(77,107,254,.9)] transition-colors hover:border-line-hover hover:bg-hover hover:text-ink"><span className="block h-3 w-3 rounded-[3px] bg-current" /></button> : <Button type="primary" shape="circle" icon={<SendOutlined />} disabled={!input.trim() && !attachments.length} onClick={() => send()} className="ml-auto h-9 w-9 border-0 bg-gradient-to-br from-[#4d6bfe] to-[#7288ff] shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)] transition-transform hover:scale-105" />}</div></div><p className="mt-2 text-center text-[11.5px] text-muted-weak">内容由 AI 生成，请仔细甄别</p></div></div>;
 }
 function RobotIcon() { return <span className="text-2xl">F</span>; }

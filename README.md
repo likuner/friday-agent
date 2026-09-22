@@ -16,7 +16,7 @@
 | 联网搜索 | 开关打开后注册 `web_search` 工具，主模型 tool_call 转交 GLM 内置联网检索（智谱 `search_std` 引擎）执行，回答附来源链接；chip 区分「联网搜索」与「文献检索」 |
 | 多模态图片 | 一次最多上传 9 张图片，转 base64 作为多模态输入送模型，消息中固定尺寸裁剪展示、点击可预览 |
 | 会话管理 | 历史记录列表、搜索、重命名、删除 |
-| 体验细节 | 深色 / 浅色主题（无闪烁切换）、流式期间可上滑阅读（粘底滚动）、复制与点赞反馈 |
+| 体验细节 | 深色 / 浅色主题（无闪烁切换）、流式期间可上滑阅读（粘底滚动）、复制与点赞反馈、用户消息编辑重发（从该条截断历史后重发，图片附件随重发保留） |
 
 ---
 
@@ -200,6 +200,7 @@ npm run dev
 | `PATCH` | `/api/conversations/{id}` | 重命名 |
 | `DELETE` | `/api/conversations/{id}` | 删除 |
 | `POST` | `/api/conversations/{id}/messages` | **SSE** 流式发送消息 |
+| `DELETE` | `/api/conversations/{id}/messages/{message_id}` | 截断：删除该条消息及其后全部消息（编辑重发用） |
 | `POST` | `/api/files` | 上传图片（multipart，仅图片，≤5MB） |
 | `GET` | `/files/{name}` | 访问已上传图片（静态目录） |
 
@@ -209,6 +210,7 @@ npm run dev
 
 | `type` | 载荷 | 说明 |
 | --- | --- | --- |
+| `sent` | `message_id` | 流首事件：用户消息已落库的真实 id（前端用它替换本地乐观 id） |
 | `text` | `content` | 正文增量 |
 | `thinking` | `content` | 思考过程增量（深度思考模式） |
 | `tool_call` | `name`、`query` | 工具调用完成（`medical_rag_search` 文献检索 / `web_search` 联网搜索），含实际检索词 |
