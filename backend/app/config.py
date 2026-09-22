@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_model: str = "embedding-3"
     embedding_dimensions: int = 512
+    # 联网搜索：主模型 tool_call 触发 web_search 工具，转交 GLM 内置联网检索执行（复用 zhipu_api_key）
+    glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    glm_model: str = "glm-4-flash"
+    glm_search_engine: str = "search_std"
     medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
     rag_top_k: int = 4
     rag_min_score: float = 0.0

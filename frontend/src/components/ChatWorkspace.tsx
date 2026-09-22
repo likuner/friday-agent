@@ -11,12 +11,11 @@ import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
 
-// 「深度思考」「联网搜索」开关暂时隐藏：后端目前只是把一句话拼进提示词，能力尚未真正接入。
-// 需要恢复时把这里改成 true 即可，thinking/searching 状态与请求参数逻辑保持不变。
+// 「深度思考」「联网搜索」开关控制：
 // 深度思考：开启后改用支持 reasoning 的模型，流式展示思考过程，回答结束后可折叠
 const SHOW_DEEP_THINKING = true;
-// 联网搜索：后端尚未真正接入，仍然隐藏
-const SHOW_WEB_SEARCH = false;
+// 联网搜索：开启后后端注册 web_search 工具，模型 tool_call 转交 GLM 联网检索执行
+const SHOW_WEB_SEARCH = true;
 
 // 距底部小于该像素即视为「贴着底部」，此时流式内容会自动跟随
 const STICK_THRESHOLD = 48;
@@ -106,12 +105,17 @@ function ToolCallChips({ calls }: { calls: ToolCall[] }) {
   if (!calls.length) return null;
   return (
     <div className="mb-2 flex flex-wrap gap-1.5">
-      {calls.map((call, index) => (
-        <span key={index} title={call.query || call.name} className="inline-flex max-w-[320px] items-center gap-1 rounded-full border border-line-brand bg-brand-soft px-2.5 py-1 text-[11px] text-brand-text">
-          <SearchOutlined />
-          <span className="truncate">已检索：{call.query || '医学文献库'}</span>
-        </span>
-      ))}
+      {calls.map((call, index) => {
+        // web_search = GLM 联网检索；其余（medical_rag_search）= 本地文献库检索
+        const isWeb = call.name === 'web_search';
+        const label = isWeb ? `联网搜索：${call.query || '网络'}` : `已检索：${call.query || '医学文献库'}`;
+        return (
+          <span key={index} title={call.query || call.name} className="inline-flex max-w-[320px] items-center gap-1 rounded-full border border-line-brand bg-brand-soft px-2.5 py-1 text-[11px] text-brand-text">
+            {isWeb ? <GlobalOutlined /> : <SearchOutlined />}
+            <span className="truncate">{label}</span>
+          </span>
+        );
+      })}
     </div>
   );
 }

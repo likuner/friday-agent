@@ -17,6 +17,9 @@ from agentscope.tool import FunctionTool, Toolkit
 from .config import settings
 from .files import resolve_stored_image
 from .rag import medical_rag_search
+# 别名避免与 _build/stream 的 web_search 布尔参数互相遮蔽
+from .websearch import web_search as _web_search_tool
+from .websearch import web_search_available
 
 logger = logging.getLogger("friday.agent")
 
@@ -34,7 +37,18 @@ _SYSTEM_PROMPT = (
     "3）回答时结合检索到的文献内容，并注明引用来源（文献标题与 URL）；"
     "4）若工具提示未找到文献，要明确说明“本地文献库未找到相关依据”，再基于通用医学知识作答并标注这一点；"
     "5）涉及急症、用药剂量或具体诊疗决策时，提醒用户及时就医并遵医嘱。"
-    "\n\n非医学问题（闲聊、编程、写作、翻译等）不要调用该工具。"
+    "\n\n非医学问题（闲聊、编程、写作、翻译等）不要调用该工具，并且在回答和思考中不要输出医学相关内容。"
+    "\n\n回答和思考必须使用中文，必须使用英文的情况除外。"
+)
+
+# 「联网搜索」开启时追加的指令：引导模型对时效性问题主动调用 web_search 工具
+_WEB_SEARCH_PROMPT = (
+    "\n\n【联网搜索】"
+    "你还有联网搜索工具 web_search（由 GLM 联网检索执行，返回网页结果与来源链接）。"
+    "用户已开启联网搜索：凡涉及时效性信息——新闻与热点、最新版本/发布/价格、近期政策、"
+    "人物或公司近况等——应先调用 web_search 检索，再结合结果回答，注明来源链接与发布时间；"
+    "医学文献依据仍优先检索 medical_rag_search，时效性医学信息可两者结合。"
+    "本地知识能稳定回答的问题不要联网。"
 )
 
 
@@ -82,38 +96,53 @@ def _tool_query(raw_args: str) -> str:
 
 class AgentService:
     def __init__(self) -> None:
-        self._agent: Agent | None = None
-        self._thinking_agent: Agent | None = None
+        self._credential: DeepSeekCredential | None = None
+        # 按（深度思考, 联网搜索）组合缓存 Agent：每个组合独立 Toolkit 与对话状态
+        self._agents: dict[tuple[bool, bool], Agent] = {}
         if settings.model_provider == "deepseek" and settings.openai_api_key:
-            credential = DeepSeekCredential(
+            self._credential = DeepSeekCredential(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url,
             )
-            self._agent = self._build(credential, settings.openai_model)
-            # 深度思考模式：换成支持 reasoning 的模型并开启 thinking，
-            # 模型会先流式返回独立思考过程（THINKING_BLOCK_DELTA），再返回正文。
-            if settings.openai_thinking_model:
-                self._thinking_agent = self._build(credential, settings.openai_thinking_model, thinking=True)
+
+    def _get_agent(self, thinking: bool, web_search: bool) -> Agent | None:
+        """按开关组合懒加载 Agent；未配置模型密钥时返回 None（走演示模式）。"""
+        if self._credential is None:
+            return None
+        key = (thinking, web_search)
+        if key not in self._agents:
+            model = settings.openai_thinking_model if thinking else settings.openai_model
+            self._agents[key] = self._build(self._credential, model, thinking=thinking, web_search=web_search)
+        return self._agents[key]
 
     @staticmethod
-    def _build(credential: DeepSeekCredential, model: str, thinking: bool = False) -> Agent:
+    def _build(credential: DeepSeekCredential, model: str, thinking: bool = False, web_search: bool = False) -> Agent:
         # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写
-        toolkit = Toolkit(
-            tools=[
+        tools = [
+            FunctionTool(
+                medical_rag_search,
+                name="medical_rag_search",
+                # 只读检索，允许模型自主执行，避免权限引擎挂起等待人工确认
+                permission=PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message="只读文献检索，自动允许",
+                ),
+            ),
+        ]
+        if web_search:
+            tools.append(
                 FunctionTool(
-                    medical_rag_search,
-                    name="medical_rag_search",
-                    # 只读检索，允许模型自主执行，避免权限引擎挂起等待人工确认
+                    _web_search_tool,
+                    name="web_search",
                     permission=PermissionDecision(
                         behavior=PermissionBehavior.ALLOW,
-                        message="只读文献检索，自动允许",
+                        message="只读联网检索，自动允许",
                     ),
                 ),
-            ],
-        )
+            )
         return Agent(
             name="Friday",
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=_SYSTEM_PROMPT + (_WEB_SEARCH_PROMPT if web_search else ""),
             # 追踪未配置时该中间件自动短路；配置后产出模型/工具/Agent 调用与 token 用量
             middlewares=[TracingMiddleware()],
             model=DeepSeekChatModel(
@@ -125,7 +154,7 @@ class AgentService:
                 # DeepSeek 接口本身兼容，纯文本/工具调用路径实测同样正常。
                 formatter=OpenAIChatFormatter(),
             ),
-            toolkit=toolkit,
+            toolkit=Toolkit(tools=tools),
         )
 
     async def stream(
@@ -135,14 +164,16 @@ class AgentService:
         web_search: bool = False,
         attachments: list[str] | None = None,
     ) -> AsyncIterator[dict[str, str]]:
-        use_thinking = deep_thinking and self._thinking_agent is not None
-        agent = self._thinking_agent if use_thinking else self._agent
+        use_thinking = deep_thinking and bool(settings.openai_thinking_model)
+        # 联网搜索需要智谱密钥（GLM 内置 web_search 执行）；未配置时降级为提示词引导
+        use_search = web_search and web_search_available()
+        agent = self._get_agent(use_thinking, use_search)
         if agent:
             user_content = messages[-1]["content"]
             # 有 reasoning 模型时由模型真正产出思考过程；没有才退化成提示词引导
             if deep_thinking and not use_thinking:
                 user_content = f"请深度思考后回答。\n\n{user_content}"
-            if web_search:
+            if web_search and not use_search:
                 user_content = f"请结合联网检索能力回答；如果无法访问网络，请明确说明。\n\n{user_content}"
             logger.info(
                 "节点[Agent调用] model=%s thinking=%s search=%s prompt=%r",

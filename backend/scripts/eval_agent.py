@@ -80,7 +80,7 @@ async def judge_answer(query: str, answer: str) -> float | None:
 async def run_case(case: dict, verbose: bool) -> dict:
     """跑单条用例：消费 agent 原生事件流，ConsoleRenderer 实时可视化。"""
     service = AgentService()
-    agent = service._agent
+    agent = service._get_agent(thinking=False, web_search=False)
     if not agent:
         raise RuntimeError("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
 
@@ -101,7 +101,7 @@ async def run_case(case: dict, verbose: bool) -> dict:
 async def main() -> None:
     setup_logging()
     verbose = "--verbose" in sys.argv
-    if not (AgentService()._agent):
+    if not (AgentService()._get_agent(thinking=False, web_search=False)):
         print("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
         return
 

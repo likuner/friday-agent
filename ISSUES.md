@@ -392,7 +392,11 @@ compose:  docker compose config 校验
 
 ### 6.6 产品与内容
 
-- **"联网搜索"是占位功能**：只是往提示词里拼一句话，无真实检索能力（开关已隐藏，后端参数仍在）。
+- ~~"联网搜索"是占位功能~~ **已接入（2026-09）**：前端开关已展示，后端注册 `web_search` 工具，
+  主模型 tool_call 转交 GLM 内置联网检索（`glm-4-flash` + `search_std` 引擎）执行，回答附来源
+  链接与发布时间；依赖 `ZHIPU_API_KEY`，未配置时降级为提示词引导。遗留改进：搜索延迟约
+  10~20s（GLM 侧检索耗时），可评估换 `search_pro` 引擎或独立 Web Search API；`search_std`
+  偶发返回 0 结果。
 - **默认模型已 sunset**：`deepseek-chat` / `deepseek-reasoner` 在 AgentScope 模型卡中标记
   `status: sunset`，建议统一迁到 `deepseek-v4-flash` / `deepseek-v4-pro`。
 - **文献语料不随仓库提供**：新用户上手成本高，建议提供小规模示例语料 + 导入脚本。

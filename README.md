@@ -13,6 +13,7 @@
 | 流式对话 | 后端 SSE 增量推送，前端打字机节奏渲染 |
 | 深度思考 | 切换到支持 reasoning 的模型，独立思考过程流式展示，回答结束后可折叠 |
 | 医学 RAG | 模型自主调用 `medical_rag_search` 检索本地 PubMed 文献向量库；支持多角度并行检索，界面展示每次的实际检索词 |
+| 联网搜索 | 开关打开后注册 `web_search` 工具，主模型 tool_call 转交 GLM 内置联网检索（智谱 `search_std` 引擎）执行，回答附来源链接；chip 区分「联网搜索」与「文献检索」 |
 | 多模态图片 | 一次最多上传 9 张图片，转 base64 作为多模态输入送模型，消息中固定尺寸裁剪展示、点击可预览 |
 | 会话管理 | 历史记录列表、搜索、重命名、删除 |
 | 体验细节 | 深色 / 浅色主题（无闪烁切换）、流式期间可上滑阅读（粘底滚动）、复制与点赞反馈 |
@@ -51,8 +52,9 @@ friday-agent/
 │   │   ├── captcha.py         # 图片验证码生成
 │   │   ├── conversations.py   # 会话 CRUD
 │   │   ├── chat.py            # SSE 流式对话，落库消息与元数据
-│   │   ├── agent.py           # Agent 组装、模型选择、多模态消息、事件转换
+│   │   ├── agent.py           # Agent 组装（按深度思考/联网搜索组合）、模型选择、多模态消息、事件转换
 │   │   ├── rag.py             # 向量检索与 medical_rag_search 工具
+│   │   ├── websearch.py       # 联网搜索：web_search 工具转交 GLM 内置联网检索执行
 │   │   ├── files.py           # 图片上传与安全校验
 │   │   ├── models.py          # ORM 模型
 │   │   ├── schemas.py         # 请求 / 响应模型
@@ -156,10 +158,13 @@ npm run dev
 | `OPENAI_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
 | `OPENAI_MODEL` | `deepseek-chat` | 常规对话模型 |
 | `OPENAI_THINKING_MODEL` | `deepseek-v4-flash` | 深度思考模型，需支持 reasoning；留空则退化为提示词引导 |
-| `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化 |
+| `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化与联网搜索 |
 | `EMBEDDING_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 向量化接口 |
 | `EMBEDDING_MODEL` | `embedding-3` | 向量模型 |
 | `EMBEDDING_DIMENSIONS` | `512` | 向量维度（需与语料入库时一致） |
+| `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 联网搜索的 GLM 接口地址 |
+| `GLM_MODEL` | `glm-4-flash` | 执行联网检索的 GLM 模型（免费；可换 `glm-4-air` 等） |
+| `GLM_SEARCH_ENGINE` | `search_std` | GLM 搜索引擎：`search_std` 0.01元/次 / `search_pro` 0.03元/次 |
 | `MEDRAG_DB_URL` | `postgresql://meduser:medpass@localhost:5433/medrag` | 文献向量库连接串 |
 | `RAG_TOP_K` | `4` | 单次检索返回条数 |
 | `RAG_MIN_SCORE` | `0.0` | 相似度过滤阈值 |
@@ -206,7 +211,7 @@ npm run dev
 | --- | --- | --- |
 | `text` | `content` | 正文增量 |
 | `thinking` | `content` | 思考过程增量（深度思考模式） |
-| `tool_call` | `name`、`query` | 工具调用完成，含工具名与实际检索词 |
+| `tool_call` | `name`、`query` | 工具调用完成（`medical_rag_search` 文献检索 / `web_search` 联网搜索），含实际检索词 |
 | `search` | `content` | 联网搜索占位提示（仅演示模式） |
 | `error` | `content` | 出错信息 |
 | `done` | `message_id` | 本轮结束 |

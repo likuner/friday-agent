@@ -46,8 +46,9 @@ backend/
     ├── captcha.py              # 图形验证码：Pillow 生成 + HMAC 签名 + 进程内存存储
     ├── conversations.py        # /api/conversations 路由：列表/创建/详情/重命名/删除
     ├── chat.py                 # /api/conversations/{id}/messages：SSE 流式对话（核心）
-    ├── agent.py                # AgentService：AgentScope Agent 装配 + 事件流适配（核心）
+    ├── agent.py                # AgentService：AgentScope Agent 组装（开关组合懒加载）+ 事件流适配（核心）
     ├── rag.py                  # 医学文献向量检索：智谱 embedding + pgvector（核心）
+    ├── websearch.py            # 联网搜索：web_search 工具转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     └── files.py                # 图片上传/解析：内容嗅探校验 + UUID 落盘 + 静态服务
 ```
 
@@ -120,7 +121,7 @@ backend/
 | --- | --- | --- | --- |
 | `text` | `content` | 正文增量（token 级） | 进打字机缓冲，逐步上屏 |
 | `thinking` | `content` | 深度思考增量 | 单独收集，折叠展示（不入正文） |
-| `tool_call` | `name`, `query` | 模型发起了工具调用（`query` 为解析出的检索词） | 渲染「已检索医学文献库」chip |
+| `tool_call` | `name`, `query` | 模型发起了工具调用（`query` 为解析出的检索词） | 渲染检索 chip：`medical_rag_search` →「已检索」，`web_search` →「联网搜索」 |
 | `done` | `message_id` | 流正常结束（assistant 消息已落库） | 解除 loading |
 | `error` | `content` | 服务端异常 | `message.error` 提示 |
 
@@ -145,10 +146,16 @@ backend/
 
 ### 4.4 agent.py 的关键实现点
 
-- **双 Agent 装配**（`AgentService._build()`）：普通对话用 `openai_model`（deepseek-chat）；
-  「深度思考」开关打开且配置了 `openai_thinking_model`（deepseek-v4-flash）时切换到
+- **按开关组合装配**（`AgentService._get_agent()`）：以（深度思考, 联网搜索）组合为键懒加载并缓存
+  Agent（各自独立 Toolkit 与对话状态）。普通对话用 `openai_model`（deepseek-chat）；
+  「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-flash）时切换到
   带 `thinking_enable=True` 的 reasoning Agent——思考过程以独立 `THINKING_BLOCK_DELTA`
   事件流出，前端折叠展示；未配置 thinking 模型则退化为提示词引导；
+- **联网搜索工具**：「联网搜索」打开且配置了 `ZHIPU_API_KEY` 时，`web_search` FunctionTool
+  （app/websearch.py）随组合注册，系统提示词追加时效性检索指令；主模型 tool_call 触发后，
+  工具内部调用 GLM `chat/completions` + 内置 `web_search` 工具（`glm-4-flash` + `search_std`
+  引擎），把「GLM 检索摘要 + 原始网页结果（标题/链接/摘要/发布时间）」回填给主模型引用作答；
+  未配置密钥时降级为提示词引导（模型会说明无法联网）；
 - **多模态消息**（`_user_message()`）：图片附件读文件 → base64 → `DataBlock(Base64Source)`，
   经 `OpenAIChatFormatter` 转成 OpenAI 兼容 `image_url`（AgentScope 自带的
   `DeepSeekChatFormatter` 会跳过 DataBlock，故显式替换 formatter）；
@@ -281,7 +288,7 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 | 层 | 实现 | 内容 |
 | --- | --- | --- |
-| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / 工具调用 / 工具参数 / 工具结果 / RAG连接 / RAG向量化 / RAG检索开始·完成·命中·异常 / 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
+| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / 工具调用 / 工具参数 / 工具结果 / RAG连接 / RAG向量化 / RAG检索开始·完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
 | 分布式追踪 | tracing.py + agent.py 的 `TracingMiddleware()` | OTLP（gRPC 4317 / HTTP 3000）导出，AgentScope Studio 可直接可视化 trace 树、token 用量、耗时；`tracing_enabled=false` 时零开销短路 |
 
 日志设计约定：**节点[名称]** 前缀统一格式，每条链路可凭 `conversation` / `call_id` 串起全轨迹。
