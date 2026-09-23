@@ -1,6 +1,6 @@
 # Friday Agent
 
-一个名字叫做 Friday 的 AI Agent 应用：FastAPI + AgentScope 后端，Next.js + Ant Design 前端。
+一个叫 Friday 的 AI Agent 应用：FastAPI + AgentScope 后端，Next.js + Ant Design 前端。
 支持流式对话、深度思考、医学文献 RAG 检索、联网搜索、多模态图片输入、两级记忆（会话级上下文管理 + 用户级长期记忆）与深色主题。
 
 ---
