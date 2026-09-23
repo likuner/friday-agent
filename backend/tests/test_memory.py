@@ -37,9 +37,10 @@ class TestMessagesSinceExtract:
         messages = self._messages(6)
         assert messages_since_extract(messages, messages[2].id) == 3
 
-    def test_unknown_cursor_returns_zero(self):
-        # 游标指向的消息已被截断删除：不重抽（旧消息可能已不在，交给下次新消息自然触发）
-        assert messages_since_extract(self._messages(5), uuid4()) == 0
+    def test_unknown_cursor_counts_all(self):
+        # 游标指向的消息已被截断删除：视为从头重抽（与抽取器切片、摘要游标自愈语义一致），
+        # 否则该会话长记忆永久停止更新
+        assert messages_since_extract(self._messages(5), uuid4()) == 5
 
     def test_cursor_at_last(self):
         messages = self._messages(3)

@@ -36,12 +36,26 @@ _EXTRACT_SEGMENT_LIMIT = 30
 
 _MERGE_PROMPT = """你是用户记忆维护器。把「已有记忆」与「新增对话片段」合并为一份新的用户记忆清单。
 
+最重要的规则——最新事实优先：片段中出现了与已有记忆冲突或更替的信息（搬家、换工作、改口、关系变化）时，必须用新事实改写对应条目并删除旧条目，绝不允许新旧两行同时保留（例如已有「- 城市：杭州」而片段说搬到上海，输出只能是「- 城市：上海」）。
+
+事实来源——只记用户：要收录的事实只能来自「用户」的发言；「Friday」的回复仅作理解上下文，其中出现的医学知识、疾病科普、药物信息、建议一律不收录。用户自述的个人健康状况（所患疾病、用药）可以收录，这是医疗助手的必要信息。
+
 合并规则：
-1. 保留仍成立的旧条目，并入片段中值得长期记住的新信息：身份与称呼、所在城市、职业、长期偏好、重要的人际与宠物；用户明确说"记住…"的必收；
-2. 不收录：临时上下文（当天天气、一次性任务）、寒暄、健康与疾病等敏感信息；
-3. 新信息与旧条目冲突（换城市、换工作、改口）时以新为准，删除被取代的旧条目；语义重复的只留一条；
+1. 片段中值得长期记住的新信息要并入：身份与称呼、所在城市、职业、长期偏好、自述的健康状况与用药、重要的人际与宠物；用户明确说"记住…"的必收；
+2. 不收录：临时上下文（当天天气）、一次性任务与提醒（如「明天复查」）、寒暄，以及任何出自 Friday 回复的知识性内容；已有记忆中不符合收录范围的旧条目也一并删除——疾病的治疗方案、缓解与并发症知识、检查项目、急症识别、药物知识、日程与活动量建议都属于医学知识或建议，不是用户事实；用户记忆只留用户自身的状况（是谁、在哪、做什么、患什么病、吃什么药、喜欢什么）；
+3. 新信息与旧条目冲突时以新为准（见最上面的最重要规则），删除被取代的旧条目；语义重复的只留一条；
 4. 每行一条、以"- "开头、一句话独立成立（如"- 城市：杭州"），总长不超过约 {max_chars} 字；
-5. 片段中没有值得记住的信息时，原样输出已有记忆。
+5. 片段中没有值得记住的信息时，原样输出已有记忆（但仍需按规则 2 剔除越界条目）。
+
+示例：
+已有记忆：
+- 城市：杭州
+- 职业：前端工程师
+新增对话片段：
+用户：我搬到上海了，转做后端了
+正确的输出：
+- 城市：上海
+- 职业：后端工程师
 
 只输出清单本身，不要任何解释、标题或围栏。"""
 
@@ -67,13 +81,18 @@ def _dedupe_lines(content: str) -> str:
 
 
 def messages_since_extract(messages: Sequence, extracted_upto_id: UUID | None) -> int:
-    """抽取游标之后的消息条数（触发抽取的判断依据）；游标找不到视为 0（防止误重抽）。"""
+    """抽取游标之后的消息条数（触发抽取的判断依据）。
+
+    游标在序列中找不到（如「编辑重发」截断删掉了游标消息）时视为需要从头重抽，
+    与 extract_user_memory 的切片语义及摘要游标（context.py）的自愈行为一致；
+    若此处返回 0，该会话的长记忆将永久停止更新。
+    """
     if extracted_upto_id is None:
         return len(messages)
     for index, message in enumerate(messages):
         if message.id == extracted_upto_id:
             return len(messages) - index - 1
-    return 0
+    return len(messages)
 
 
 async def load_memory_block(session: AsyncSession, user_id: UUID) -> str | None:
@@ -96,8 +115,13 @@ async def load_memory_block(session: AsyncSession, user_id: UUID) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _render_segment(messages: Sequence) -> str:
+    """只喂用户发言：Friday 回复里的知识/建议从源头进不了合并器。
+
+    曾经整段喂入导致助手侧医学知识（疾病科普、药物知识）被当成用户事实
+    收进记忆；只留用户发言后，无论模型是否遵守提示词的来源规则都污染不进来。
+    """
     return "\n".join(
-        f"{'用户' if m.role == 'user' else 'Friday'}：{str(m.content or '').strip()}" for m in messages
+        f"用户：{str(m.content or '').strip()}" for m in messages if m.role == "user"
     )
 
 
@@ -169,10 +193,14 @@ async def extract_user_memory(conversation_id: UUID, user_id: UUID) -> None:
                 segment = segment[:_EXTRACT_SEGMENT_LIMIT]
                 if not segment:
                     return
+                segment_text = _render_segment(segment)
+                if not segment_text:
+                    # 片段里只有助手回复（用户发言为空）：跳过且不推游标，下轮与新用户消息一起处理
+                    return
 
                 row = await session.scalar(select(UserMemory).where(UserMemory.user_id == user_id))
                 old_content = row.content if row else ""
-                merged = _dedupe_lines(await _merge_via_glm(old_content, _render_segment(segment)))
+                merged = _dedupe_lines(await _merge_via_glm(old_content, segment_text))
                 if not merged:
                     # 空回视为模型失误：不动库、不推游标，下一轮重试同一段
                     logger.warning("节点[记忆空回] conversation=%s 下轮重试", conversation_id)
@@ -184,8 +212,9 @@ async def extract_user_memory(conversation_id: UUID, user_id: UUID) -> None:
                 conversation.memory_extracted_upto = segment[-1].id
                 await session.commit()
                 logger.info(
-                    "节点[记忆合并] user=%s conversation=%s 条目数=%s 游标推进至=%s",
+                    "节点[记忆合并] user=%s conversation=%s 条目数=%s 游标推进至=%s 内容=[%s]",
                     user_id, conversation_id, merged.count("\n") + 1, segment[-1].id,
+                    " | ".join(merged.splitlines()),
                 )
         except Exception:
             logger.exception("节点[记忆抽取异常] conversation=%s 下轮将自动重试", conversation_id)
