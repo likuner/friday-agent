@@ -26,6 +26,9 @@ class Conversation(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(200))
+    # 会话级记忆：滚动摘要 + 摘要进度游标（已覆盖到哪条消息；早于游标的消息不再回放）
+    summary: Mapped[str | None] = mapped_column(Text)
+    summary_upto_message_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     user: Mapped[User] = relationship(back_populates="conversations")

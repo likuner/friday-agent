@@ -3,15 +3,17 @@ import asyncio
 import base64
 import json
 import logging
+from uuid import UUID
 
 from agentscope.agent import Agent
 from agentscope.credential import DeepSeekCredential
 from agentscope.event import EventType
 from agentscope.formatter import OpenAIChatFormatter
-from agentscope.message import Base64Source, DataBlock, TextBlock, UserMsg
+from agentscope.message import AssistantMsg, Base64Source, DataBlock, Msg, TextBlock, UserMsg
 from agentscope.middleware import TracingMiddleware
 from agentscope.model import DeepSeekChatModel
 from agentscope.permission import PermissionBehavior, PermissionDecision
+from agentscope.state import AgentState
 from agentscope.tool import FunctionTool, Toolkit
 
 from .config import settings
@@ -37,7 +39,13 @@ _SYSTEM_PROMPT = (
     "3）回答时结合检索到的文献内容，并注明引用来源（文献标题与 URL）；"
     "4）若工具提示未找到文献，要明确说明“本地文献库未找到相关依据”，再基于通用医学知识作答并标注这一点；"
     "5）涉及急症、用药剂量或具体诊疗决策时，提醒用户及时就医并遵医嘱。"
-    "\n\n非医学问题（闲聊、编程、写作、翻译等）不要调用该工具，并且在回答和思考中不要输出医学相关内容。"
+    "\n\n非医学问题（闲聊、编程、写作、翻译等）不要调用该工具，并且在回答和思考中不要输出医学相关内容，"
+    "也不要向用户解释你对工具的选择（如\"这个问题不涉及医学，我就不检索文献库\"）。"
+    "\n\n【会话上下文是有效事实】"
+    "对话历史或会话摘要中，用户已提供、双方已确认的信息（如所在城市、当天天气、日期、个人情况与偏好等）"
+    "就是当前会话的既定事实：后续追问时直接沿用并注明来源（如\"根据你刚才提到的…\"），"
+    "不要以\"无法获取实时数据\"\"不知道你所在的城市\"为由拒绝基于会话上下文回答；"
+    "仅当用户明确要求最新实时信息、且相应工具（如联网搜索）可用时才重新获取。"
     "\n\n回答和思考必须使用中文，必须使用英文的情况除外。"
 )
 
@@ -94,29 +102,41 @@ def _tool_query(raw_args: str) -> str:
     return query if isinstance(query, str) else ""
 
 
+def _replay_msgs(replay: list[dict[str, str]]) -> list[Msg]:
+    """把库中的回放窗口转成 AgentScope 消息：仅 user/assistant 纯文本（已由 context.py 清洗）。"""
+    return [
+        UserMsg(name="user", content=item["content"])
+        if item["role"] == "user"
+        else AssistantMsg(name="Friday", content=item["content"])
+        for item in replay
+    ]
+
+
 class AgentService:
+    """无状态的对话服务：跨请求不持有任何 Agent 上下文（记忆的唯一事实来源是数据库）。
+
+    每轮请求用「滚动摘要 + 回放窗口」重建一次性 Agent：
+    摘要注入 AgentState.summary（框架自动前置到模型上下文），历史经 observe 回放，
+    本轮消息（含图片附件）作为 reply_stream 的输入。进程级共享实例带来的
+    跨会话串味、重启失忆、并发中止连锁、开关切换丢上下文随之消失。
+    """
+
     def __init__(self) -> None:
         self._credential: DeepSeekCredential | None = None
-        # 按（深度思考, 联网搜索）组合缓存 Agent：每个组合独立 Toolkit 与对话状态
-        self._agents: dict[tuple[bool, bool], Agent] = {}
         if settings.model_provider == "deepseek" and settings.openai_api_key:
             self._credential = DeepSeekCredential(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url,
             )
 
-    def _get_agent(self, thinking: bool, web_search: bool) -> Agent | None:
-        """按开关组合懒加载 Agent；未配置模型密钥时返回 None（走演示模式）。"""
-        if self._credential is None:
-            return None
-        key = (thinking, web_search)
-        if key not in self._agents:
-            model = settings.openai_thinking_model if thinking else settings.openai_model
-            self._agents[key] = self._build(self._credential, model, thinking=thinking, web_search=web_search)
-        return self._agents[key]
-
     @staticmethod
-    def _build(credential: DeepSeekCredential, model: str, thinking: bool = False, web_search: bool = False) -> Agent:
+    def _build(
+        credential: DeepSeekCredential,
+        model: str,
+        state: AgentState,
+        thinking: bool = False,
+        web_search: bool = False,
+    ) -> Agent:
         # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写
         tools = [
             FunctionTool(
@@ -145,6 +165,8 @@ class AgentService:
             system_prompt=_SYSTEM_PROMPT + (_WEB_SEARCH_PROMPT if web_search else ""),
             # 追踪未配置时该中间件自动短路；配置后产出模型/工具/Agent 调用与 token 用量
             middlewares=[TracingMiddleware()],
+            # 每轮一次性状态：session_id 绑定会话，summary 承载滚动摘要
+            state=state,
             model=DeepSeekChatModel(
                 credential=credential,
                 model=model,
@@ -159,7 +181,10 @@ class AgentService:
 
     async def stream(
         self,
-        messages: list[dict[str, str]],
+        conversation_id: UUID,
+        replay: list[dict[str, str]],
+        summary: str | None,
+        content: str,
         deep_thinking: bool = False,
         web_search: bool = False,
         attachments: list[str] | None = None,
@@ -167,19 +192,27 @@ class AgentService:
         use_thinking = deep_thinking and bool(settings.openai_thinking_model)
         # 联网搜索需要智谱密钥（GLM 内置 web_search 执行）；未配置时降级为提示词引导
         use_search = web_search and web_search_available()
-        agent = self._get_agent(use_thinking, use_search)
-        if agent:
-            user_content = messages[-1]["content"]
+        if self._credential is not None:
+            model = settings.openai_thinking_model if use_thinking else settings.openai_model
+            # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
+            state = AgentState(
+                session_id=str(conversation_id),
+                summary=f"【本会话此前对话的滚动摘要（要点记录，细节以最近消息为准）】\n{summary}" if summary else "",
+            )
+            agent = self._build(self._credential, model, state, thinking=use_thinking, web_search=use_search)
+            user_content = content
             # 有 reasoning 模型时由模型真正产出思考过程；没有才退化成提示词引导
             if deep_thinking and not use_thinking:
                 user_content = f"请深度思考后回答。\n\n{user_content}"
             if web_search and not use_search:
                 user_content = f"请结合联网检索能力回答；如果无法访问网络，请明确说明。\n\n{user_content}"
             logger.info(
-                "节点[Agent调用] model=%s thinking=%s search=%s prompt=%r",
-                settings.openai_thinking_model if use_thinking else settings.openai_model,
-                deep_thinking, web_search, user_content[:100],
+                "节点[Agent调用] conversation=%s replay=%s条(摘要=%s) model=%s thinking=%s search=%s prompt=%r",
+                conversation_id, len(replay), bool(summary), model, deep_thinking, web_search, user_content[:100],
             )
+            # 历史先回放（纯文本），本轮消息（含图片）再作为输入：附件预算只留给本轮
+            if replay:
+                await agent.observe(_replay_msgs(replay))
             tool_args: dict[str, str] = {}
             tool_names: dict[str, str] = {}
             async for event in agent.reply_stream(_user_message(user_content, attachments)):
@@ -211,13 +244,13 @@ class AgentService:
             logger.info("节点[Agent返回] 模型流结束")
             return
 
-        logger.warning("节点[演示模式] 未配置模型密钥，返回本地演示流式回复 prompt=%r", messages[-1]["content"][:100])
+        logger.warning("节点[演示模式] 未配置模型密钥，返回本地演示流式回复 prompt=%r", content[:100])
 
         if deep_thinking:
             yield {"type": "thinking", "content": "正在梳理问题的上下文、约束条件和可执行步骤。"}
         if web_search:
             yield {"type": "search", "content": "已准备好联网搜索结果摘要。"}
-        answer = self._demo_answer(messages[-1]["content"])
+        answer = self._demo_answer(content)
         for index in range(0, len(answer), 4):
             await asyncio.sleep(0.025)
             yield {"type": "text", "content": answer[index : index + 4]}

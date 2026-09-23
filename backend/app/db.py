@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -19,7 +20,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    from . import models
+    from . import models  # noqa: F401  确保模型注册到 metadata
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        # create_all 只建新表，不改已存在的表：会话记忆两列在此幂等补齐（等价于一次性迁移）
+        await connection.execute(
+            text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT")
+        )
+        await connection.execute(
+            text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary_upto_message_id UUID")
+        )

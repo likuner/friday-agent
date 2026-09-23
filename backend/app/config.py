@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-4-flash"
     glm_search_engine: str = "search_std"
+    # 会话级记忆（上下文管理）：回放窗口 token 预算与滚动摘要参数。
+    # 溢出段（早于窗口、晚于摘要游标）攒够 summary_min_overflow_tokens 才触发后台压缩，
+    # 避免每轮都做小规模摘要；摘要模型复用 glm_model。
+    context_token_budget: int = 1000
+    summary_max_tokens: int = 500
+    summary_min_overflow_tokens: int = 200
     medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
     rag_top_k: int = 4
     rag_min_score: float = 0.0
