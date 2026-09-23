@@ -16,6 +16,7 @@ from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.state import AgentState
 from agentscope.tool import FunctionTool, Toolkit
 
+from .agent_logging import AgentLoggingMiddleware
 from .config import settings
 from .files import resolve_stored_image
 from .prompts import SYSTEM_PROMPT, WEB_SEARCH_PROMPT
@@ -135,8 +136,8 @@ class AgentService:
             system_prompt=SYSTEM_PROMPT
             + (f"\n\n{memory_block}" if memory_block else "")
             + (f"\n\n{WEB_SEARCH_PROMPT}" if web_search else ""),
-            # 追踪未配置时该中间件自动短路；配置后产出模型/工具/Agent 调用与 token 用量
-            middlewares=[TracingMiddleware()],
+            # Tracing 未配置时自动短路；日志中间件产出执行段节点日志（模型/工具/耗时/token）
+            middlewares=[TracingMiddleware(), AgentLoggingMiddleware()],
             # 每轮一次性状态：session_id 绑定会话，summary 承载滚动摘要
             state=state,
             model=DeepSeekChatModel(
@@ -193,21 +194,16 @@ class AgentService:
             tool_names: dict[str, str] = {}
             async for event in agent.reply_stream(_user_message(user_content, attachments)):
                 if event.type == EventType.TEXT_BLOCK_DELTA:
-                    # 暂时关闭流式 delta 逐 token 日志（噪音大，需要时取消注释即可恢复）
-                    # logger.debug("节点[模型增量] type=text delta=%r", event.delta)
                     yield {"type": "text", "content": event.delta}
                 elif event.type == EventType.THINKING_BLOCK_DELTA:
-                    # logger.debug("节点[模型增量] type=thinking delta=%r", event.delta)
                     yield {"type": "thinking", "content": event.delta}
                 elif event.type == EventType.TOOL_CALL_START:
                     tool_args[event.tool_call_id] = ""
                     tool_names[event.tool_call_id] = event.tool_call_name
-                    logger.info("节点[工具调用] model 自主决策调用工具 name=%s call_id=%s", event.tool_call_name, event.tool_call_id)
                 elif event.type == EventType.TOOL_CALL_DELTA:
                     tool_args[event.tool_call_id] = tool_args.get(event.tool_call_id, "") + event.delta
                 elif event.type == EventType.TOOL_CALL_END:
                     raw_args = tool_args.get(event.tool_call_id, "")
-                    logger.info("节点[工具参数] call_id=%s args=%s", event.tool_call_id, raw_args[:200])
                     # 参数到 END 才收全：把工具名和检索词一起下发，前端 chip 显示检索词，
                     # 多次并行检索（多角度）就不会看起来像重复的同一个 chip。
                     yield {
@@ -215,9 +211,8 @@ class AgentService:
                         "name": tool_names.get(event.tool_call_id, ""),
                         "query": _tool_query(raw_args),
                     }
-                elif event.type == EventType.TOOL_RESULT_END:
-                    logger.info("节点[工具结果] call_id=%s 工具结果已返回给模型", event.tool_call_id)
-            logger.info("节点[Agent返回] 模型流结束")
+            # 执行段节点日志（模型调用/工具调用·参数·结果/耗时/token）由
+            # AgentLoggingMiddleware 在中间件钩子里记，此处只做事件 → SSE 翻译
             return
 
         logger.warning("节点[演示模式] 未配置模型密钥，返回本地演示流式回复 prompt=%r", content[:100])

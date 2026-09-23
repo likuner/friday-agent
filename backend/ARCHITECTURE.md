@@ -47,6 +47,7 @@ backend/
     ├── conversations.py        # /api/conversations 路由：列表/创建/详情/重命名/删除 + 消息截断（编辑重发）
     ├── chat.py                 # /api/conversations/{id}/messages：SSE 流式对话（核心）
     ├── agent.py                # AgentService：AgentScope Agent 组装（开关组合懒加载）+ 事件流适配（核心）
+    ├── agent_logging.py        # AgentLoggingMiddleware：Agent 执行段节点日志（模型/工具/耗时/token，挂载于 Agent）
     ├── rag.py                  # 医学文献向量检索：智谱 embedding + pgvector（核心）
     ├── websearch.py            # 联网搜索：web_search 工具转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     └── files.py                # 图片上传/解析：内容嗅探校验 + UUID 落盘 + 静态服务
@@ -291,7 +292,7 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 | 层 | 实现 | 内容 |
 | --- | --- | --- |
-| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / 工具调用 / 工具参数 / 工具结果 / RAG连接 / RAG向量化 / RAG检索开始·完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
+| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger；Agent 执行段由 agent_logging.py 的 `AgentLoggingMiddleware` 产出（挂载于 `Agent(middlewares=...)`），服务层/工具内部日志仍在各模块 | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / Agent返回（含轮次·整轮 token 合计·耗时） / 模型调用·返回（含每轮 token 用量·缓存命中） / 工具调用（含参数） / 工具结果（含状态·耗时） / RAG连接 / RAG向量化 / RAG检索开始·完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
 | 分布式追踪 | tracing.py + agent.py 的 `TracingMiddleware()` | OTLP（gRPC 4317 / HTTP 3000）导出，AgentScope Studio 可直接可视化 trace 树、token 用量、耗时；`tracing_enabled=false` 时零开销短路 |
 
 日志设计约定：**节点[名称]** 前缀统一格式，每条链路可凭 `conversation` / `call_id` 串起全轨迹。
