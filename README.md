@@ -1,7 +1,7 @@
 # Friday Agent
 
 一个名字叫做 Friday 的 AI Agent 应用：FastAPI + AgentScope 后端，Next.js + Ant Design 前端。
-支持流式对话、深度思考、医学文献 RAG 检索、多模态图片输入与深色主题。
+支持流式对话、深度思考、医学文献 RAG 检索、联网搜索、多模态图片输入、两级记忆（会话级上下文管理 + 用户级长期记忆）与深色主题。
 
 ---
 
@@ -16,6 +16,8 @@
 | 联网搜索 | 开关打开后注册 `web_search` 工具，主模型 tool_call 转交 GLM 内置联网检索（智谱 `search_std` 引擎）执行，回答附来源链接；chip 区分「联网搜索」与「文献检索」 |
 | 多模态图片 | 一次最多上传 9 张图片，转 base64 作为多模态输入送模型，消息中固定尺寸裁剪展示、点击可预览 |
 | 会话管理 | 历史记录列表、搜索、重命名、删除 |
+| 会话级记忆 | 每轮从数据库按 token 预算装配「滚动摘要 + 最近若干轮」上下文；超预算的早期历史由 GLM 后台异步压缩成摘要落库；重启不失忆、跨会话零串味 |
+| 用户级长期记忆 | 对话中异步抽取稳定事实与偏好（"记住我喜欢…"），跨会话注入 system prompt；新信息自动覆盖旧信息 |
 | 体验细节 | 深色 / 浅色主题（无闪烁切换）、流式期间可上滑阅读（粘底滚动）、复制与点赞反馈、用户消息编辑重发（从该条截断历史后重发，图片附件随重发保留） |
 
 ---
@@ -51,12 +53,15 @@ friday-agent/
 │   │   ├── auth_routes.py     # 验证码 / 注册 / 登录 / 当前用户
 │   │   ├── captcha.py         # 图片验证码生成
 │   │   ├── conversations.py   # 会话 CRUD
-│   │   ├── chat.py            # SSE 流式对话，落库消息与元数据
-│   │   ├── agent.py           # Agent 组装（按深度思考/联网搜索组合）、模型选择、多模态消息、事件转换
+│   │   ├── chat.py            # SSE 流式对话：上下文装配接线、后台记忆任务触发、落库消息与元数据
+│   │   ├── agent.py           # 无状态 Agent 构造（每轮 AgentState + observe 回放）、模型选择、多模态消息、事件转换
+│   │   ├── context.py         # 上下文装配：token 近似估算、消息清洗、预算窗口切分（纯函数）
+│   │   ├── summarizer.py      # 会话滚动摘要：GLM 合并压缩、游标幂等、失败自愈
+│   │   ├── memory.py          # 用户长期记忆：单行聚合存储、GLM 合并抽取、注入组装、行级去重
 │   │   ├── rag.py             # 向量检索与 medical_rag_search 工具
 │   │   ├── websearch.py       # 联网搜索：web_search 工具转交 GLM 内置联网检索执行
 │   │   ├── files.py           # 图片上传与安全校验
-│   │   ├── models.py          # ORM 模型
+│   │   ├── models.py          # ORM 模型（users / conversations / messages / user_memories）
 │   │   ├── schemas.py         # 请求 / 响应模型
 │   │   ├── logging_config.py  # 日志初始化
 │   │   └── tracing.py         # OpenTelemetry 追踪初始化（OTLP 导出）
@@ -64,9 +69,11 @@ friday-agent/
 │   │   ├── eval_rag.py        # RAG 检索评测（Hit@K / MRR）
 │   │   ├── eval_agent.py      # Agent 工具决策与回答质量评测
 │   │   └── cleanup_files.py   # 按引用关系安全清理孤儿图片
+│   ├── tests/                 # 纯函数单测（上下文装配 / 记忆），pytest
 │   ├── files/                 # 上传的图片（运行时生成，不入库）
 │   ├── logs/                  # 日志（运行时生成，不入库）
 │   ├── requirements.txt
+│   ├── requirements-dev.txt   # 开发依赖（pytest）
 │   └── README.md              # 后端细节
 ├── frontend/
 │   └── src/
@@ -127,7 +134,7 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 - 健康检查：<http://localhost:8000/health>
 - 接口文档：<http://localhost:8000/docs>
-- 启动时会自动建表（生产环境建议改用 Alembic）
+- 启动时自动建新表并对已有表幂等加列（生产环境建议改用 Alembic）
 
 ### 4. 前端
 
@@ -165,6 +172,12 @@ npm run dev
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 联网搜索的 GLM 接口地址 |
 | `GLM_MODEL` | `glm-4-flash` | 执行联网检索的 GLM 模型（免费；可换 `glm-4-air` 等） |
 | `GLM_SEARCH_ENGINE` | `search_std` | GLM 搜索引擎：`search_std` 0.01元/次 / `search_pro` 0.03元/次 |
+| `CONTEXT_TOKEN_BUDGET` | `1000` | 会话回放窗口 token 预算（开发调试值，生产建议 `16000`） |
+| `SUMMARY_MAX_TOKENS` | `500` | 会话滚动摘要目标长度 |
+| `SUMMARY_MIN_OVERFLOW_TOKENS` | `200` | 溢出段触发摘要压缩的最小 token 数（开发调试值，生产建议 `2000`） |
+| `MEMORY_ENABLED` | `true` | 用户长期记忆总开关；无智谱密钥时抽取自动停用，读取注入不受影响 |
+| `MEMORY_EXTRACT_MIN_MESSAGES` | `1` | 会话新增多少条消息触发一次记忆抽取（`1` = 每轮判断） |
+| `MEMORY_MAX_TOKENS` | `500` | 用户记忆合并输出上限 |
 | `MEDRAG_DB_URL` | `postgresql://meduser:medpass@localhost:5433/medrag` | 文献向量库连接串 |
 | `RAG_TOP_K` | `4` | 单次检索返回条数 |
 | `RAG_MIN_SCORE` | `0.0` | 相似度过滤阈值 |
@@ -219,6 +232,25 @@ npm run dev
 | `done` | `message_id` | 本轮结束 |
 
 请求体字段：`content`（允许为空，表示只发图片）、`deep_thinking`、`web_search`、`attachments`（文件名数组，最多 9 个）。
+
+---
+
+## 记忆系统（两级）
+
+完整设计、代码地图、边界策略与验收记录见 [`MEMORY.md`](MEMORY.md)。
+
+每轮模型上下文的组成：
+
+```
+① system prompt + 工具定义 + 用户长期记忆块（≤500 tok）
+② 会话滚动摘要（AgentState.summary，框架自动前置注入）
+③ 回放窗口：token 预算内最近若干轮纯文本（observe 回放）
+④ 本轮用户消息 + 图片附件（图片只随本轮发）
+```
+
+- **会话级记忆**：每轮从 `messages` 表装配上下文；超出预算的早期历史由 GLM（glm-4-flash，免费档）后台异步压缩成滚动摘要落库（`conversations.summary`，进度游标幂等、失败下轮自愈）。Agent 每轮新建、进程内零跨请求状态——跨用户串味、重启失忆、并发中止连锁、切开关丢上下文从架构上消除。
+- **用户级长期记忆**：`user_memories` 表每用户一行聚合文本；对话中后台 GLM 合并式抽取稳定事实与偏好（明确说"记住…"必收；排除临时上下文与健康敏感信息；新信息覆盖旧信息，如换城市），每轮查一行拼进 system prompt，跨会话生效。
+- 两条管线共用「每会话锁 + 进度游标 + 失败自愈」模式，互不阻塞对话流。
 
 ---
 
@@ -284,6 +316,10 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64(public:secret)>"
 ```bash
 cd backend
 
+# 纯函数单测（上下文装配 / 记忆）：先装开发依赖
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests/ -q
+
 # RAG 检索评测（Hit@K / MRR），报告写入 logs/eval_rag.json
 .venv/bin/python scripts/eval_rag.py
 
@@ -313,7 +349,9 @@ npx tsc --noEmit   # 类型检查
 - **默认模型已标记 sunset**：`deepseek-chat` / `deepseek-reasoner` 在 AgentScope 模型卡中为 `status: sunset`，当前可用的推理模型是 `deepseek-v4-flash` / `deepseek-v4-pro`。建议把 `OPENAI_MODEL` 一并迁到 v4 系列。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
 - **`/files` 静态目录无鉴权**：依靠 32 位随机 UUID 文件名不可枚举来保护。正式产品建议改为带鉴权的下载接口或签名 URL。
 - **点赞状态仅保存在前端**：刷新后重置，未落库。
-- **历史图片不重复送模型**：多轮追问时，模型只能看到当前这一轮附带的图片。
+- **历史图片不重复送模型**：多轮追问时，模型只能看到当前这一轮附带的图片（历史轮次回放为 `[图片]` 占位文本）。
+- **长期记忆暂无管理入口**：查看 / 删除需直接操作 `user_memories` 表（单行聚合结构）；管理页面在演进计划中，见 MEMORY.md §十。
+- **token 计数为字符近似**：中文 ÷1.6 + 其余 ÷4，预算为软约束，不引 tokenizer 依赖（取舍见 MEMORY.md §八）。
 - **单张图片上限 5MB**：9 张同时顶满时请求体会较大，可能触碰模型 API 的体积上限。
 - **文献库未随仓库提供**：`medrag` 语料需自行准备并导入。
 
@@ -321,6 +359,7 @@ npx tsc --noEmit   # 类型检查
 
 ## 相关文档
 
+- **记忆系统实现文档（会话级 + 用户级）**：[`MEMORY.md`](MEMORY.md)
 - **问题盘点与演进方案（记忆 / 多模态 / CI-CD / 云上线）**：[`ISSUES.md`](ISSUES.md)
 - 后端细节与接口说明：[`backend/README.md`](backend/README.md)
 - 前端细节：[`frontend/README.md`](frontend/README.md)
