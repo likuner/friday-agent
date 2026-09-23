@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     context_token_budget: int = 1000
     summary_max_tokens: int = 500
     summary_min_overflow_tokens: int = 200
+    # 用户级长期记忆：每用户一行聚合文本，GLM 合并式抽取（与滚动摘要同构），
+    # 每轮全量注入 system prompt。长度由合并提示词限定，写回前行级去重兜底。
+    # 未配置智谱密钥时抽取自动停用，读取注入不受影响。
+    memory_enabled: bool = True
+    memory_extract_min_messages: int = 1
+    memory_max_tokens: int = 500
     medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
     rag_top_k: int = 4
     rag_min_score: float = 0.0

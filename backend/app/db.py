@@ -31,3 +31,6 @@ async def init_db() -> None:
         await connection.execute(
             text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary_upto_message_id UUID")
         )
+        await connection.execute(
+            text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS memory_extracted_upto UUID")
+        )

@@ -136,6 +136,7 @@ class AgentService:
         state: AgentState,
         thinking: bool = False,
         web_search: bool = False,
+        memory_block: str | None = None,
     ) -> Agent:
         # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写
         tools = [
@@ -162,7 +163,11 @@ class AgentService:
             )
         return Agent(
             name="Friday",
-            system_prompt=_SYSTEM_PROMPT + (_WEB_SEARCH_PROMPT if web_search else ""),
+            # 长期记忆块（用户画像/事实条目，自带标注头）插在人设指令之后；
+            # 其标注已声明"与最近对话冲突时以最近对话为准"，与会话上下文指令衔接
+            system_prompt=_SYSTEM_PROMPT
+            + (f"\n\n{memory_block}" if memory_block else "")
+            + (_WEB_SEARCH_PROMPT if web_search else ""),
             # 追踪未配置时该中间件自动短路；配置后产出模型/工具/Agent 调用与 token 用量
             middlewares=[TracingMiddleware()],
             # 每轮一次性状态：session_id 绑定会话，summary 承载滚动摘要
@@ -188,6 +193,7 @@ class AgentService:
         deep_thinking: bool = False,
         web_search: bool = False,
         attachments: list[str] | None = None,
+        memory_block: str | None = None,
     ) -> AsyncIterator[dict[str, str]]:
         use_thinking = deep_thinking and bool(settings.openai_thinking_model)
         # 联网搜索需要智谱密钥（GLM 内置 web_search 执行）；未配置时降级为提示词引导
@@ -199,7 +205,10 @@ class AgentService:
                 session_id=str(conversation_id),
                 summary=f"【本会话此前对话的滚动摘要（要点记录，细节以最近消息为准）】\n{summary}" if summary else "",
             )
-            agent = self._build(self._credential, model, state, thinking=use_thinking, web_search=use_search)
+            agent = self._build(
+                self._credential, model, state,
+                thinking=use_thinking, web_search=use_search, memory_block=memory_block,
+            )
             user_content = content
             # 有 reasoning 模型时由模型真正产出思考过程；没有才退化成提示词引导
             if deep_thinking and not use_thinking:
