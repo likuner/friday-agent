@@ -14,5 +14,13 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const jar = await cookies();
   const theme = jar.get('friday_theme')?.value === 'dark' ? 'dark' : 'light';
   const sidebar = jar.get('friday_sidebar')?.value === 'collapsed' ? 'collapsed' : 'expanded';
-  return <html lang="zh-CN" data-theme={theme} data-sidebar={sidebar} suppressHydrationWarning><body suppressHydrationWarning><AntdRegistry><Providers initialTheme={theme}>{children}</Providers></AntdRegistry></body></html>;
+  return (
+    <html lang="zh-CN" data-theme={theme} data-sidebar={sidebar} suppressHydrationWarning>
+      <body suppressHydrationWarning>
+        <AntdRegistry>
+          <Providers initialTheme={theme}>{children}</Providers>
+        </AntdRegistry>
+      </body>
+    </html>
+  );
 }

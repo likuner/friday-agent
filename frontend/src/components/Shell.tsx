@@ -57,25 +57,56 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
         {/* 头部：折叠后 px-4(32px) 装不下 32px logo + 32px 折叠按钮，收窄为 md:px-2 */}
         <div className="flex h-[60px] shrink-0 items-center px-4 sidebar-collapsed:md:px-2">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#4d6bfe] to-[#7c94ff] text-white shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)]"><RobotOutlined /></span>
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#4d6bfe] to-[#7c94ff] text-white shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)]">
+            <RobotOutlined />
+          </span>
           <b className="ml-2 min-w-0 flex-1 truncate whitespace-nowrap bg-gradient-to-r from-ink-soft to-[#4d6bfe] bg-clip-text text-[17px] text-transparent sidebar-collapsed:md:hidden">Friday</b>
-          <button title="收起菜单" onClick={() => setSidebarOpen(false)} className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover md:hidden"><CloseOutlined /></button>
-          <button title="展开/收起侧边栏" onClick={toggleCollapsed} className="ml-auto hidden h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover md:grid"><span className="grid place-items-center sidebar-collapsed:md:hidden"><MenuFoldOutlined /></span><span className="hidden place-items-center sidebar-collapsed:md:grid"><MenuUnfoldOutlined /></span></button>
+          <button title="收起菜单" onClick={() => setSidebarOpen(false)} className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover md:hidden">
+            <CloseOutlined />
+          </button>
+          <button title="展开/收起侧边栏" onClick={toggleCollapsed} className="ml-auto hidden h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover md:grid">
+            <span className="grid place-items-center sidebar-collapsed:md:hidden">
+              <MenuFoldOutlined />
+            </span>
+            <span className="hidden place-items-center sidebar-collapsed:md:grid">
+              <MenuUnfoldOutlined />
+            </span>
+          </button>
         </div>
 
         <div className="px-3 pb-2 sidebar-collapsed:md:px-2">
-          <Button onClick={add} icon={<PlusCircleOutlined />} block title="开启新对话" className="h-10 text-left sidebar-collapsed:md:px-0"><span className="whitespace-nowrap sidebar-collapsed:md:hidden">开启新对话</span></Button>
+          <Button onClick={add} icon={<PlusCircleOutlined />} block title="开启新对话" className="h-10 text-left sidebar-collapsed:md:px-0">
+            <span className="whitespace-nowrap sidebar-collapsed:md:hidden">开启新对话</span>
+          </Button>
         </div>
 
         <nav className="space-y-1 px-3 pb-2 sidebar-collapsed:md:px-2">
-          <Link href="/chat" className={navClass(pathname.startsWith('/chat'))}><MessageOutlined />{label('对话')}</Link>
-          <Link href="/history" className={navClass(pathname === '/history')}><HistoryOutlined />{label('历史记录')}<span className="ml-auto whitespace-nowrap text-xs sidebar-collapsed:md:hidden">{items.length}</span></Link>
+          <Link href="/chat" className={navClass(pathname.startsWith('/chat'))}>
+            <MessageOutlined />
+            {label('对话')}
+          </Link>
+          <Link href="/history" className={navClass(pathname === '/history')}>
+            <HistoryOutlined />
+            {label('历史记录')}
+            <span className="ml-auto whitespace-nowrap text-xs sidebar-collapsed:md:hidden">{items.length}</span>
+          </Link>
         </nav>
 
         <div className="scroll-hide min-h-0 flex-1 overflow-y-auto px-3">
           <div className="sidebar-collapsed:md:hidden">
             <p className="px-3 py-2 text-xs text-muted-weak">最近对话</p>
-            {items.map((item) => <div key={item.id} className={`group mb-1 flex items-center rounded-xl ${pathname.includes(item.id) ? 'bg-brand-soft' : 'hover:bg-hover'}`}><Link href={`/chat/${item.id}`} className="min-w-0 flex-1 truncate px-3 py-2 text-[13.5px] text-body">{item.title}</Link><Dropdown menu={{ items: [{ key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除', onClick: () => remove(item.id) }] }}><button className="mr-2 grid h-7 w-7 place-items-center rounded-lg text-muted opacity-0 group-hover:opacity-100"><MoreOutlined /></button></Dropdown></div>)}
+            {items.map((item) => (
+              <div key={item.id} className={`group mb-1 flex items-center rounded-xl ${pathname.includes(item.id) ? 'bg-brand-soft' : 'hover:bg-hover'}`}>
+                <Link href={`/chat/${item.id}`} className="min-w-0 flex-1 truncate px-3 py-2 text-[13.5px] text-body">
+                  {item.title}
+                </Link>
+                <Dropdown menu={{ items: [{ key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除', onClick: () => remove(item.id) }] }}>
+                  <button className="mr-2 grid h-7 w-7 place-items-center rounded-lg text-muted opacity-0 group-hover:opacity-100">
+                    <MoreOutlined />
+                  </button>
+                </Dropdown>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -84,7 +115,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2 rounded-xl px-2 py-2 sidebar-collapsed:md:justify-center sidebar-collapsed:md:gap-0 sidebar-collapsed:md:px-0">
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#4d6bfe] text-sm text-white">{user?.username.slice(0, 1).toUpperCase()}</span>
             <span className="min-w-0 flex-1 truncate whitespace-nowrap text-sm sidebar-collapsed:md:hidden">{user?.username}</span>
-            <button title="退出登录" onClick={confirmLogout} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover"><LogoutOutlined /></button>
+            <button title="退出登录" onClick={confirmLogout} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover">
+              <LogoutOutlined />
+            </button>
           </div>
         </div>
       </aside>

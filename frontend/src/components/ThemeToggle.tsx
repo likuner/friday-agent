@@ -16,8 +16,12 @@ export default function ThemeToggle({ className = '' }: { className?: string }) 
       className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-ink ${className}`}
     >
       {/* 必须用 span 包一层：直接给 antd 图标加 hidden 会被 .anticon{display:inline-flex} 覆盖（同优先级但 antd 样式后注入） */}
-      <span className="grid place-items-center dark:hidden"><MoonOutlined /></span>
-      <span className="hidden place-items-center dark:grid"><SunOutlined /></span>
+      <span className="grid place-items-center dark:hidden">
+        <MoonOutlined />
+      </span>
+      <span className="hidden place-items-center dark:grid">
+        <SunOutlined />
+      </span>
     </button>
   );
 }

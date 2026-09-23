@@ -84,9 +84,9 @@ async def rag_search(query: str, top_k: int | None = None) -> list[dict]:
             query[:80], len(hits), len(kept), hits[0]["score"] if hits else 0.0, time.monotonic() - started,
         )
         for index, hit in enumerate(kept, 1):
-            logger.debug(
-                "节点[RAG命中] #%s score=%.4f title=%r snippet=%r",
-                index, hit["score"], hit["title"], hit["chunk_text"][:120],
+            logger.info(
+                "节点[RAG命中] #%s score=%.4f title=%r source=%r snippet=%r",
+                index, hit["score"], hit["title"], hit["source"], hit["chunk_text"][:120],
             )
         return kept
     except Exception:
@@ -95,7 +95,7 @@ async def rag_search(query: str, top_k: int | None = None) -> list[dict]:
 
 
 async def medical_rag_search(query: str, top_k: int = 4) -> str:
-    """检索本地医学文献向量库（PubMed 摘要语料）。当用户询问医学或健康相关问题（疾病、症状、诊断、治疗、药物、临床研究等）时调用本工具，获取文献依据后再回答。非医学问题不要调用。"""
+    """检索本地医学文献向量库（语料为中文医学文献，检索词请使用中文，通用英文缩写可保留）。当用户询问医学或健康相关问题（疾病、症状、诊断、治疗、药物、临床研究等）时调用本工具，获取文献依据后再回答。非医学问题不要调用。"""
     try:
         hits = await rag_search(query, top_k)
     except Exception as exc:
