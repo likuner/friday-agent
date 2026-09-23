@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     zhipu_api_key: str = ""
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_model: str = "embedding-3"
-    embedding_dimensions: int = 512
+    embedding_dimensions: int = 1024
     # 联网搜索：主模型 tool_call 触发 web_search 工具，转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-4-flash"

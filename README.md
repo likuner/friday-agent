@@ -168,7 +168,7 @@ npm run dev
 | `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化与联网搜索 |
 | `EMBEDDING_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 向量化接口 |
 | `EMBEDDING_MODEL` | `embedding-3` | 向量模型 |
-| `EMBEDDING_DIMENSIONS` | `512` | 向量维度（需与语料入库时一致） |
+| `EMBEDDING_DIMENSIONS` | `1024` | 向量维度（需与语料入库时一致） |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 联网搜索的 GLM 接口地址 |
 | `GLM_MODEL` | `glm-4-flash` | 执行联网检索的 GLM 模型（免费；可换 `glm-4-air` 等） |
 | `GLM_SEARCH_ENGINE` | `search_std` | GLM 搜索引擎：`search_std` 0.01元/次 / `search_pro` 0.03元/次 |
