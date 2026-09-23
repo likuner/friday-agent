@@ -112,12 +112,13 @@ function UserMessage({ item, busy, onCopy, onResend }: { item: Message; busy: bo
               <div className="whitespace-pre-wrap text-[14.5px] leading-7">{item.content}</div>
             </div>
           )}
-          <div className="flex items-center gap-1 text-xs text-muted-weak">
-            {item.content && (
+          {/* 纯多模态（如仅图片、无文字）的消息没有可编辑的文本，不提供复制/编辑重发 */}
+          {item.content && (
+            <div className="flex items-center gap-1 text-xs text-muted-weak">
               <button onClick={() => onCopy(item.content)} className="rounded px-2 py-1 transition-colors hover:bg-hover"><CopyOutlined /> 复制</button>
-            )}
-            <button onClick={() => { setDraft(item.content); setEditing(true); }} disabled={busy} title={busy ? '生成中暂不能编辑' : '编辑这条提问并重新发送（该条之后的消息会被删除）'} className="rounded px-2 py-1 transition-colors hover:bg-hover disabled:opacity-50"><EditOutlined /> 编辑重发</button>
-          </div>
+              <button onClick={() => { setDraft(item.content); setEditing(true); }} disabled={busy} title={busy ? '生成中暂不能编辑' : '编辑这条提问并重新发送（该条之后的消息会被删除）'} className="rounded px-2 py-1 transition-colors hover:bg-hover disabled:opacity-50"><EditOutlined /> 编辑重发</button>
+            </div>
+          )}
         </>
       )}
     </div>
