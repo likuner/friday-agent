@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { CloseOutlined, DeleteOutlined, FolderAddOutlined, FolderOpenOutlined, HistoryOutlined, LoadingOutlined, LogoutOutlined, MessageOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusCircleOutlined, RobotOutlined } from '@ant-design/icons';
+import { CloseOutlined, DeleteOutlined, FolderAddOutlined, FolderOpenOutlined, HistoryOutlined, LoadingOutlined, LogoutOutlined, MessageOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusCircleOutlined } from '@ant-design/icons';
 import { App, Button, Dropdown, Tooltip } from 'antd';
 import { conversations, createConversation, deleteConversation, pickWorkspace, setWorkspace, type Conversation } from '@/lib/api';
 import { shortDir } from '@/lib/path';
 import LoadMore from '@/components/LoadMore';
+import Logo from '@/components/Logo';
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
 
@@ -171,10 +172,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
         {/* 头部：展开态是品牌名 + 折叠按钮；折叠态 logo 隐藏，只留居中的展开按钮（窄栏放不下两个 32px 控件） */}
         <div className="flex h-[60px] shrink-0 items-center px-4 sidebar-collapsed:md:h-14 sidebar-collapsed:md:justify-center sidebar-collapsed:md:px-0">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#4d6bfe] to-[#7c94ff] text-white shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)] sidebar-collapsed:md:hidden">
-            <RobotOutlined />
-          </span>
-          <b className="ml-2 min-w-0 flex-1 truncate whitespace-nowrap bg-gradient-to-r from-ink-soft to-[#4d6bfe] bg-clip-text text-[17px] text-transparent sidebar-collapsed:md:hidden">Friday</b>
+          <Logo className="h-8 w-8 shrink-0 drop-shadow-[0_6px_14px_rgba(77,107,254,.45)] sidebar-collapsed:md:hidden" />
+          <b className="ml-2 min-w-0 flex-1 truncate whitespace-nowrap bg-gradient-to-r from-ink-soft to-[#4d6bfe] bg-clip-text text-[17px] text-transparent sidebar-collapsed:md:hidden">Friday Agent</b>
           <button title="收起菜单" onClick={() => setSidebarOpen(false)} className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-hover md:hidden">
             <CloseOutlined />
           </button>

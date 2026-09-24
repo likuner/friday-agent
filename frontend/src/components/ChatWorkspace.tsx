@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { conversation, confirmPermission, createConversation, fileUrl, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
 import ThemeToggle from '@/components/ThemeToggle';
+import Logo from '@/components/Logo';
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
 
@@ -494,9 +495,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
           <div className="mx-auto w-full max-w-[800px] space-y-7 px-4 py-7 sm:px-6">
             {messages.length === 0 ? (
               <div className="pt-14 text-center">
-                <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#4d6bfe] text-2xl text-white">
-                  <RobotIcon />
-                </div>
+                <Logo className="mx-auto h-14 w-14 drop-shadow-[0_10px_24px_rgba(77,107,254,.35)]" />
                 <h2 className="mt-5 text-2xl font-semibold">Hi，我是 Friday</h2>
                 <p className="mx-auto mt-2 max-w-[460px] text-[13.5px] leading-6 text-muted">
                   我可以帮你写代码、读文件、写作、做方案，也能联网查最新资料。
@@ -518,7 +517,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                   <div key={item.id} className="msg-in flex gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted">
-                        <span className="grid h-5 w-5 place-items-center rounded-md bg-gradient-to-br from-[#4d6bfe] to-[#7c94ff] text-[9px] text-white">F</span>
+                        <Logo className="h-5 w-5" />
                         Friday Agent
                       </div>
                       <ToolCallChips calls={(item.meta?.toolCalls as ToolCall[]) || []} />
@@ -688,4 +687,3 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     </div>
   );
 }
-function RobotIcon() { return <span className="text-2xl">F</span>; }
