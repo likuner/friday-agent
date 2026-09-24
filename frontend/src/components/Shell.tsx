@@ -13,6 +13,8 @@ import { useUI } from '@/store/ui';
 
 // 侧边栏两组各自分页：每页 20 条，滚到底自动加载下一页（见 LoadMore）
 const PAGE_SIZE = 20;
+// 刷新（替换式重拉）时的最大窗口，与后端 MAX_PAGE_SIZE 对齐
+const MAX_PAGE_SIZE = 100;
 // 侧边栏会话分组：workspace = 有工作区（Agent 工具会话），plain = 普通对话
 type Group = 'workspace' | 'plain';
 
@@ -34,14 +36,18 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   // 请求去重（state 异步，滚动可能连触发多次）
   const loadingRef = useRef<Record<Group, boolean>>({ workspace: false, plain: false });
+  // 已加载条数：刷新时按它取同一窗口，避免把翻过的页丢掉
+  const loadedRef = useRef<Record<Group, number>>({ workspace: 0, plain: 0 });
+  useEffect(() => { loadedRef.current.workspace = workspaceItems.length; }, [workspaceItems.length]);
+  useEffect(() => { loadedRef.current.plain = plainItems.length; }, [plainItems.length]);
 
   // 拉某一组的一页：offset=0 替换（首次/刷新），否则追加并按 id 去重（并发/新会话插入兜底）
-  const fetchGroup = async (kind: Group, offset: number, replace: boolean) => {
+  const fetchGroup = async (kind: Group, offset: number, replace: boolean, limit = PAGE_SIZE) => {
     if (!token || loadingRef.current[kind]) return;
     loadingRef.current[kind] = true;
     setLoadingKind((old) => ({ ...old, [kind]: true }));
     try {
-      const page = await conversations(token, { kind, limit: PAGE_SIZE, offset });
+      const page = await conversations(token, { kind, limit, offset });
       const append = (old: Conversation[]) => {
         if (replace) return page.items;
         const seen = new Set(old.map((item) => item.id));
@@ -57,10 +63,17 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     }
   };
   useEffect(() => { hydrate(); }, [hydrate]);
+  // 只在「登录态变化」与「列表版本号变化」时重拉：路由切换（点侧栏会话）不再重拉——
+  // 否则已翻到第 2 页的列表会被截回第 1 页，列表缩短 + 滚动跳位，点一下会话就闪一下。
+  // 懒创建、新建工作区会话、历史页改名/删除都会 bumpConversations()，列表照旧同步。
   useEffect(() => {
-    if (token) { void fetchGroup('workspace', 0, true); void fetchGroup('plain', 0, true); }
-    else if (token === null && localStorage.getItem('friday_token') === null) router.replace('/login');
-  }, [token, pathname, conversationsVersion]);
+    if (token) {
+      // 刷新按「已加载条数」取同一窗口：列表不会因一次刷新被截回第 1 页（缩表 + 滚动跳位就是闪动来源）
+      const loadedWindow = (kind: Group) => Math.min(MAX_PAGE_SIZE, Math.max(PAGE_SIZE, loadedRef.current[kind]));
+      void fetchGroup('workspace', 0, true, loadedWindow('workspace'));
+      void fetchGroup('plain', 0, true, loadedWindow('plain'));
+    } else if (token === null && localStorage.getItem('friday_token') === null) router.replace('/login');
+  }, [token, conversationsVersion]);
   // 路由变化时收起移动端抽屉
   useEffect(() => { setSidebarOpen(false); }, [pathname, setSidebarOpen]);
 

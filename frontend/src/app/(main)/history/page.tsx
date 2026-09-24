@@ -8,6 +8,7 @@ import { shortDir } from '@/lib/path';
 import LoadMore from '@/components/LoadMore';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/store/auth';
+import { useUI } from '@/store/ui';
 
 // 每页 20 条；搜索走服务端（q 参数），输入停止 300ms 后才发请求
 const PAGE_SIZE = 20;
@@ -16,6 +17,8 @@ const SEARCH_DEBOUNCE_MS = 300;
 function HistoryContent() {
   const { message, modal } = App.useApp();
   const token = useAuth((state) => state.token);
+  // 改名/删除后通知侧栏重拉：Shell 已不再随路由切换重拉（避免点击闪动），同步改由版本号驱动
+  const bumpConversations = useUI((state) => state.bumpConversations);
   const [items, setItems] = useState<Conversation[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');      // 输入框即时值
@@ -60,8 +63,8 @@ function HistoryContent() {
     }
   };
 
-  const rename = (item: Conversation) => { let value = item.title; modal.confirm({ title: '重命名对话', content: <Input defaultValue={value} onChange={(event) => { value = event.target.value; }} />, onOk: async () => { if (!token) return; const updated = await renameConversation(token, item.id, value); setItems((old) => old.map((row) => row.id === item.id ? { ...row, ...updated } : row)); } }); };
-  const remove = (item: Conversation) => modal.confirm({ title: '删除这个对话？', okButtonProps: { danger: true }, onOk: async () => { if (!token) return; await deleteConversation(token, item.id); setItems((old) => old.filter((row) => row.id !== item.id)); setTotal((count) => Math.max(count - 1, 0)); message.success('已删除'); } });
+  const rename = (item: Conversation) => { let value = item.title; modal.confirm({ title: '重命名对话', content: <Input defaultValue={value} onChange={(event) => { value = event.target.value; }} />, onOk: async () => { if (!token) return; const updated = await renameConversation(token, item.id, value); setItems((old) => old.map((row) => row.id === item.id ? { ...row, ...updated } : row)); bumpConversations(); } }); };
+  const remove = (item: Conversation) => modal.confirm({ title: '删除这个对话？', okButtonProps: { danger: true }, onOk: async () => { if (!token) return; await deleteConversation(token, item.id); setItems((old) => old.filter((row) => row.id !== item.id)); setTotal((count) => Math.max(count - 1, 0)); bumpConversations(); message.success('已删除'); } });
 
   return (
     <main className="flex h-full min-w-0 flex-col">
