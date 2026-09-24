@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { ArrowDownOutlined, CloseOutlined, CopyOutlined, DownOutlined, EditOutlined, GlobalOutlined, LikeFilled, LikeOutlined, PaperClipOutlined, PictureOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
-import { App, Button, Image as AntdImage } from 'antd';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowDownOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DownOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
+import { App, Button, Dropdown, Image as AntdImage } from 'antd';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { conversation, createConversation, fileUrl, streamMessage, truncateMessages, uploadImage, type Message, type ToolCall, type UploadedFile } from '@/lib/api';
+import { conversation, confirmPermission, createConversation, fileUrl, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
@@ -16,6 +16,20 @@ import { useUI } from '@/store/ui';
 const SHOW_DEEP_THINKING = true;
 // 联网搜索：开启后后端注册 web_search 工具，模型 tool_call 转交 GLM 联网检索执行
 const SHOW_WEB_SEARCH = true;
+// Agent 工具不再有入口开关：有工作区的会话（侧边栏「工作区」组标题 + 新建）自动开启，
+// 工作区选定后不可更改；无工作区的普通会话不开启。
+
+// AgentScope 内置工具名（区别于检索类工具，运行提示显示「正在执行」）
+const BUILTIN_TOOL_NAMES = new Set(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate']);
+
+// 权限模式选项（后端 ChatRequest/会话设置的取值域；BYPASS 不开放）。
+// 仅工作区会话显示选择器；选择随会话持久化（chat 生效优先级：会话设置 > 请求参数 > default）。
+const PERMISSION_MODE_OPTIONS = [
+  { value: 'default', label: '每步确认', hint: '未授权操作弹确认卡片' },
+  { value: 'accept_edits', label: '工作区免确认', hint: '工作区内写入自动放行，其余仍确认' },
+  { value: 'explore', label: '只读', hint: '一切修改直接拒绝' },
+  { value: 'dont_ask', label: '自动', hint: '未授权直接拒绝，不弹确认' },
+] as const;
 
 // 距底部小于该像素即视为「贴着底部」，此时流式内容会自动跟随
 const STICK_THRESHOLD = 48;
@@ -160,17 +174,35 @@ function StreamingHint({ label }: { label: string }) {
   );
 }
 
+// 工具 chip 的展示映射：按工具名选图标与文案（query 字段承载检索词/命令/文件路径/任务标题）
+function toolChipInfo(call: ToolCall): { icon: ReactNode; label: string } {
+  const q = call.query || '';
+  switch (call.name) {
+    case 'web_search': return { icon: <GlobalOutlined />, label: `联网搜索：${q || '网络'}` };
+    case 'Bash': return { icon: <CodeOutlined />, label: `已执行命令：${q || 'shell'}` };
+    case 'Read': return { icon: <FileTextOutlined />, label: `已读取：${q || '文件'}` };
+    case 'Write': return { icon: <FileTextOutlined />, label: `已写入：${q || '文件'}` };
+    case 'Edit': return { icon: <EditOutlined />, label: `已编辑：${q || '文件'}` };
+    case 'Glob': return { icon: <FolderOpenOutlined />, label: `已查找文件：${q || '工作区'}` };
+    case 'Grep': return { icon: <SearchOutlined />, label: `已搜索内容：${q || '工作区'}` };
+    case 'TaskCreate':
+    case 'TaskUpdate': return { icon: <OrderedListOutlined />, label: `任务规划：${q || '更新进度'}` };
+    case 'TaskGet':
+    case 'TaskList': return { icon: <OrderedListOutlined />, label: '查看任务清单' };
+    // medical_rag_search 及未知工具按本地文献检索展示
+    default: return { icon: <SearchOutlined />, label: `已检索：${q || '医学文献库'}` };
+  }
+}
+
 function ToolCallChips({ calls }: { calls: ToolCall[] }) {
   if (!calls.length) return null;
   return (
     <div className="mb-2 flex flex-wrap gap-1.5">
       {calls.map((call, index) => {
-        // web_search = GLM 联网检索；其余（medical_rag_search）= 本地文献库检索
-        const isWeb = call.name === 'web_search';
-        const label = isWeb ? `联网搜索：${call.query || '网络'}` : `已检索：${call.query || '医学文献库'}`;
+        const { icon, label } = toolChipInfo(call);
         return (
           <span key={index} title={call.query || call.name} className="inline-flex max-w-[320px] items-center gap-1 rounded-full border border-line-brand bg-brand-soft px-2.5 py-1 text-[11px] text-brand-text">
-            {isWeb ? <GlobalOutlined /> : <SearchOutlined />}
+            {icon}
             <span className="truncate">{label}</span>
           </span>
         );
@@ -179,16 +211,46 @@ function ToolCallChips({ calls }: { calls: ToolCall[] }) {
   );
 }
 
+// 权限确认卡片：DEFAULT / ACCEPT_EDITS 模式下未授权操作推到前端，允许 / 总是允许 / 拒绝
+// （超时无人应答由后端自动拒绝并推 permission_resolved 事件）
+function PermissionCard({ ask, onConfirm }: { ask: PermissionAsk; onConfirm: (approved: boolean, always: boolean) => void }) {
+  const statusText = ask.status === 'approved' ? '已允许' : ask.status === 'denied' ? '已拒绝' : '超时已自动拒绝';
+  return (
+    <div className="mb-2 rounded-xl border border-[#d8b75c] bg-[#fdf6e3] px-3 py-2 text-[13px] dark:border-[#6b5a24] dark:bg-[#332b14]">
+      <div className="mb-1.5 font-medium text-body">权限确认：Friday 请求执行以下操作</div>
+      {ask.calls.map((call) => (
+        <div key={call.id} className="mb-1 truncate font-mono text-[12px] text-muted" title={call.query}>
+          {call.name}{call.query ? `：${call.query}` : ''}
+        </div>
+      ))}
+      {ask.status === 'pending' ? (
+        <div className="mt-2 flex gap-2">
+          <Button size="small" type="primary" onClick={() => onConfirm(true, false)}>允许</Button>
+          <Button size="small" onClick={() => onConfirm(true, true)}>总是允许</Button>
+          <Button size="small" danger onClick={() => onConfirm(false, false)}>拒绝</Button>
+        </div>
+      ) : (
+        <div className="mt-1 text-xs text-muted-weak">{statusText}</div>
+      )}
+    </div>
+  );
+}
+
 export default function ChatWorkspace({ conversationId }: { conversationId?: string }) {
   const { message } = App.useApp();
   const token = useAuth((state) => state.token);
   const setSidebarOpen = useUI((state) => state.setSidebarOpen);
+  const bumpConversations = useUI((state) => state.bumpConversations);
   const [id, setId] = useState(conversationId);
   const [title, setTitle] = useState('新的对话');
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [searching, setSearching] = useState(false);
+  // 会话工作区与权限模式：由会话详情带出（工作区会话自动开启 Agent 工具）；
+  // 工作区在侧边栏「工作区」组标题 + 时选定，会话内不可更改
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  const [permissionMode, setPermissionMode] = useState<(typeof PERMISSION_MODE_OPTIONS)[number]['value']>('default');
   const [loading, setLoading] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -197,8 +259,10 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const flushTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // 正在流式输出的 assistant 消息 id：用于判断思考面板该展开还是收起
   const [streamingId, setStreamingId] = useState<string | null>(null);
-  // 模型正在调用工具（tool_call 事件后、正文恢复流式前）：期间正文下方持续显示「正在检索…」
+  // 模型正在调用工具（tool_call 事件后、正文恢复流式前）：期间正文下方持续显示「正在检索/执行…」
   const [toolRunning, setToolRunning] = useState(false);
+  // 最近一次调用的工具名：内置工具（Bash/文件/任务）提示「正在执行」，检索类提示「正在检索」
+  const [runningTool, setRunningTool] = useState('');
   // 用户手动展开/收起思考过程的覆盖值
   const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
   // 当前流式请求的中止控制器（「停止生成」按钮使用）
@@ -230,7 +294,16 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
 
   useEffect(() => () => { if (flushTimer.current) clearInterval(flushTimer.current); }, []);
 
-  useEffect(() => { stick.current = true; setAtBottom(true); if (token && conversationId) conversation(token, conversationId).then((data) => { setId(data.id); setTitle(data.title); setMessages(data.messages); }); else { setId(undefined); setTitle('新的对话'); setMessages([]); } }, [token, conversationId]);
+  // 会话切换：重置滚动/工作区/权限模式（工作区与权限随详情返回，无则默认）
+  useEffect(() => {
+    stick.current = true; setAtBottom(true); setWorkspaceRoot(null); setPermissionMode('default');
+    if (token && conversationId) conversation(token, conversationId).then((data) => {
+      setId(data.id); setTitle(data.title); setMessages(data.messages);
+      setWorkspaceRoot(data.workspace_root || null);
+      if (data.permission_mode && PERMISSION_MODE_OPTIONS.some((option) => option.value === data.permission_mode)) setPermissionMode(data.permission_mode as typeof permissionMode);
+    });
+    else { setId(undefined); setTitle('新的对话'); setMessages([]); }
+  }, [token, conversationId]);
   // 只有用户本来贴着底部才自动跟随：流式输出期间上滑阅读不会被拉回底部
   useEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [messages]);
 
@@ -291,7 +364,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     if (!override) { setInput(''); setAttachments([]); }
     stick.current = true; setAtBottom(true);
     let target = id;
-    if (!target) { const created = await createConversation(token, content.slice(0, 30)); target = created.id; setId(target); setTitle(created.title); window.history.replaceState(null, '', `/chat/${target}`); }
+    if (!target) { const created = await createConversation(token, content.slice(0, 30)); target = created.id; setId(target); setTitle(created.title); window.history.replaceState(null, '', `/chat/${target}`); bumpConversations(); }
     const userMessage: Message = { id: crypto.randomUUID(), role: 'user', content, meta: { attachments: sentAttachments }, created_at: new Date().toISOString() };
     const assistantId = crypto.randomUUID();
     setMessages((old) => [...old, userMessage, { id: assistantId, role: 'assistant', content: '', meta: {}, created_at: new Date().toISOString() }]);
@@ -327,10 +400,15 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     }, 50);
     const controller = new AbortController();
     abortRef.current = controller;
-    try { await streamMessage(token, target, { content, deep_thinking: thinking, web_search: searching, attachments: sentAttachments }, (event) => {
+    try { await streamMessage(token, target, { content, deep_thinking: thinking, web_search: searching, agent_tools: !!workspaceRoot, permission_mode: permissionMode, attachments: sentAttachments }, (event) => {
       // 流首 sent 事件：把乐观渲染的本地 id 替换成库中真实 id，编辑重发的截断才能按 id 定位
       if (event.type === 'sent' && event.message_id) { setMessages((old) => old.map((row) => row.id === userMessage.id ? { ...row, id: event.message_id! } : row)); return; }
-      if (event.type === 'thinking') thinkingBuffer.current += event.content || ''; else if (event.type === 'text') { setToolRunning(false); streamBuffer.current += event.content || ''; } else if (event.type === 'tool_call') { setToolRunning(true); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, toolCalls: [...((row.meta?.toolCalls as ToolCall[]) || []), { name: event.name || 'medical_rag_search', query: event.query }] } } : row)); } }, controller.signal); } catch (error) {
+      if (event.type === 'thinking') thinkingBuffer.current += event.content || '';
+      else if (event.type === 'text') { setToolRunning(false); streamBuffer.current += event.content || ''; }
+      else if (event.type === 'tool_call') { setToolRunning(true); setRunningTool(event.name || ''); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, toolCalls: [...((row.meta?.toolCalls as ToolCall[]) || []), { name: event.name || 'medical_rag_search', query: event.query }] } } : row)); }
+      else if (event.type === 'permission_ask') { setToolRunning(false); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, permissionAsk: { calls: event.calls || [], status: 'pending' } as PermissionAsk } } : row)); }
+      else if (event.type === 'permission_resolved') { setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, permissionAsk: { ...(((row.meta?.permissionAsk as PermissionAsk) || { calls: [] })), status: event.approved ? 'approved' : (event.timed_out ? 'timeout' : 'denied') } as PermissionAsk } } : row)); }
+    }, controller.signal); } catch (error) {
       // 用户主动中止不算错误：保留已生成的部分并标记
       if (error instanceof DOMException && error.name === 'AbortError') {
         setMessages((old) => old.map((item) => item.id === assistantId ? { ...item, meta: { ...item.meta, stopped: true } } : item));
@@ -339,6 +417,32 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
         message.error(error instanceof Error ? error.message : '发送失败');
       }
     } finally { abortRef.current = null; streamDone.current = true; await flushed; setLoading(false); setStreamingId(null); setToolRunning(false); }
+  };
+
+  // 权限确认卡片应答：先乐观置状态防重复点击，再调确认接口；后端随后的
+  // permission_resolved 事件会用权威结果（含超时）覆盖同一状态
+  const answerPermission = async (approved: boolean, always: boolean) => {
+    if (!token || !id) return;
+    setMessages((old) => old.map((row) => row.id === streamingId ? { ...row, meta: { ...row.meta, permissionAsk: { ...(((row.meta?.permissionAsk as PermissionAsk) || { calls: [] })), status: approved ? 'approved' : 'denied' } as PermissionAsk } } : row));
+    try {
+      await confirmPermission(token, id, approved, always);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '应答失败');
+    }
+  };
+
+  // 切换权限模式：乐观更新 + 存库（会话记住；后端 chat 以会话设置为最高优先级）
+  const changePermissionMode = async (mode: string) => {
+    if (!token || !id || mode === permissionMode) return;
+    if (!PERMISSION_MODE_OPTIONS.some((option) => option.value === mode)) return;
+    const previous = permissionMode;
+    setPermissionMode(mode as typeof permissionMode);
+    try {
+      await savePermissionMode(token, id, mode);
+    } catch (error) {
+      setPermissionMode(previous);
+      message.error(error instanceof Error ? error.message : '保存权限模式失败');
+    }
   };
 
   // 编辑重发：把该条及其后的消息截断（前端 + 后端），再以编辑后的内容走正常发送链路
@@ -371,6 +475,17 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
             <h1 className="truncate text-[15px] font-medium">{title}</h1>
             <span className="text-xs text-muted-weak">{messages.length} 条消息</span>
           </div>
+          {workspaceRoot && (
+            <span className="ml-1 hidden min-w-0 items-center gap-1 rounded-full border border-line bg-soft px-2 py-0.5 text-[11px] text-muted sm:inline-flex" title={workspaceRoot}>
+              <FolderOpenOutlined className="shrink-0 text-brand-text" />
+              <span className="max-w-[220px] truncate">{workspaceRoot.split('/').filter(Boolean).slice(-2).join('/')}</span>
+            </span>
+          )}
+          {workspaceRoot && (
+            <span className="ml-1 grid h-6 w-6 shrink-0 place-items-center rounded-full border border-line bg-soft text-[11px] text-brand-text sm:hidden" title={workspaceRoot}>
+              <FolderOpenOutlined />
+            </span>
+          )}
         </div>
         <ThemeToggle />
       </header>
@@ -407,6 +522,9 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                         Friday Agent
                       </div>
                       <ToolCallChips calls={(item.meta?.toolCalls as ToolCall[]) || []} />
+                      {(item.meta?.permissionAsk as PermissionAsk | undefined)?.calls?.length ? (
+                        <PermissionCard ask={item.meta!.permissionAsk as PermissionAsk} onConfirm={answerPermission} />
+                      ) : null}
                       {thinkingText && (
                         <ThinkingPanel
                           text={thinkingText}
@@ -422,7 +540,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                           </ReactMarkdown>
                           {isStreamingThis && toolRunning && (
                             <div className="mt-1">
-                              <StreamingHint label="正在检索" />
+                              <StreamingHint label={BUILTIN_TOOL_NAMES.has(runningTool) ? '正在执行' : '正在检索'} />
                             </div>
                           )}
                           <div className="mt-2 flex gap-1 text-xs text-muted-weak">
@@ -438,7 +556,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                           </div>
                         </div>
                       ) : (
-                        <StreamingHint label={isStreamingThis && toolRunning ? '正在检索' : '正在思考'} />
+                        <StreamingHint label={isStreamingThis && toolRunning ? (BUILTIN_TOOL_NAMES.has(runningTool) ? '正在执行' : '正在检索') : '正在思考'} />
                       )}
                       {item.meta?.stopped ? <div className="mt-2 text-xs text-muted-weak">已停止生成</div> : null}
                     </div>
@@ -517,6 +635,31 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
               >
                 <GlobalOutlined /> 联网搜索
               </button>
+            )}
+            {workspaceRoot && (
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: PERMISSION_MODE_OPTIONS.map((option) => ({
+                    key: option.value,
+                    label: (
+                      <span className="flex flex-col py-0.5">
+                        <span>{option.label}</span>
+                        <span className="text-[11px] text-muted-weak">{option.hint}</span>
+                      </span>
+                    ),
+                  })),
+                  selectedKeys: [permissionMode],
+                  onClick: ({ key }) => changePermissionMode(key),
+                }}
+              >
+                <button
+                  title="Agent 工具权限模式（随会话记住）"
+                  className="rounded-full border border-[#4d6bfe] bg-brand-soft px-3 py-1 text-xs text-brand-text"
+                >
+                  <SafetyOutlined /> {PERMISSION_MODE_OPTIONS.find((option) => option.value === permissionMode)?.label} <DownOutlined className="text-[9px]" />
+                </button>
+              </Dropdown>
             )}
             {loading ? (
               <button

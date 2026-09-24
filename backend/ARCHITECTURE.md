@@ -17,7 +17,8 @@
 - [七、数据模型](#七数据模型)
 - [八、可观测体系](#八可观测体系)
 - [九、脚本工具](#九脚本工具)
-- [十、已知设计权衡与问题](#十已知设计权衡与问题)
+- [十、内置工具与权限模型（app/agent_tools.py）](#十内置工具与权限模型appagent_toolspy)
+- [十一、已知设计权衡与问题](#十一已知设计权衡与问题)
 
 ---
 
@@ -48,9 +49,12 @@ backend/
     ├── chat.py                 # /api/conversations/{id}/messages：SSE 流式对话（核心）
     ├── agent.py                # AgentService：AgentScope Agent 组装（开关组合懒加载）+ 事件流适配（核心）
     ├── agent_logging.py        # AgentLoggingMiddleware：Agent 执行段节点日志（模型/工具/耗时/token，挂载于 Agent）
+    ├── agent_tools.py          # 内置工具注册与权限边界：工具清单 + 权限上下文 + deny 规则
+    ├── workspace_picker.py     # 会话工作区：系统原生目录选择框（osascript/zenity）+ 路径校验
     ├── rag.py                  # 医学文献向量检索：智谱 embedding + pgvector（核心）
     ├── websearch.py            # 联网搜索：web_search 工具转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     └── files.py                # 图片上传/解析：内容嗅探校验 + UUID 落盘 + 静态服务
+├── workspaces/                    # Agent 内置工具的会话工作区（/workspaces/<会话id>/ 静态服务，运行时生成）
 ```
 
 ---
@@ -123,7 +127,9 @@ backend/
 | `sent` | `message_id` | 流首事件：用户消息落库后的真实 id（chat.py 直发，非 agent 事件） | 替换乐观渲染的本地 id（编辑重发按 id 截断的前提） |
 | `text` | `content` | 正文增量（token 级） | 进打字机缓冲，逐步上屏 |
 | `thinking` | `content` | 深度思考增量 | 单独收集，折叠展示（不入正文） |
-| `tool_call` | `name`, `query` | 模型发起了工具调用（`query` 为解析出的检索词） | 渲染检索 chip：`medical_rag_search` →「已检索」，`web_search` →「联网搜索」 |
+| `tool_call` | `name`, `query` | 模型发起了工具调用（`query` 为解析出的检索词/命令/文件路径摘要） | 渲染检索 chip：`medical_rag_search` →「已检索」，`web_search` →「联网搜索」，内置工具按名映射 |
+| `permission_ask` | `reply_id`, `calls[]` | 权限 ASK：本轮 parked，等前端确认（DEFAULT/ACCEPT_EDITS 模式） | 渲染确认卡片（允许 / 总是允许 / 拒绝），应答走 `POST /permissions/confirm` |
+| `permission_resolved` | `approved`, `timed_out` | 确认已处理（应答或超时自动拒绝），流即将续跑 | 卡片置为已允许 / 已拒绝 / 超时状态 |
 | `done` | `message_id` | 流正常结束（assistant 消息已落库） | 解除 loading |
 | `error` | `content` | 服务端异常 | `message.error` 提示 |
 
@@ -186,6 +192,27 @@ backend/
   `onEvent` 回调；
 - `onEvent` 内部不做渲染节流——**渲染节流在 ChatWorkspace 的打字机缓冲层**
   （50ms 一拍，按 `缓冲长度/8` 自适应放字），与后端节流相互独立。
+
+### 4.6 会话列表：分页 + 服务端搜索
+
+`GET /api/conversations` 一次返回一页（`ConversationPage = {items, total, has_more}`），
+参数：`q`（标题 ILIKE，服务端过滤，用户输入的 `%`/`_` 由 `_like_pattern` 转义为字面量）、
+`kind`（`all` / `workspace` / `plain`，靠 `LEFT JOIN conversation_settings` +
+`workspace_root IS [NOT] NULL` 区分，**无设置行与仅有权限模式的行都算 plain**）、
+`limit`（默认 20，≤100）、`offset`。排序 `updated_at DESC, id DESC`——补 id 是为了
+`updated_at` 同秒时 offset 分页不跳条不重条；`total` 用同样的过滤条件单独 `count(*)`。
+
+前端 `components/LoadMore.tsx` 是两处共用的「加载下一页」交互：`IntersectionObserver`
+观察底部哨兵（`rootMargin: 160px` 提前触发）自动加载，同时保留一枚可点按钮兜底
+（触控高度 ≥32px，手机友好），`hasMore=false` 时显示「已全部加载」（`showEnd={false}`
+可关闭，侧边栏「工作区」组即用它去掉收尾文案）。`hasMore` 由
+`已加载条数 < total` 推导，因此删除/新增后无需额外同步。`loading` 由 true 回到 false
+会重建 observer——新一页若仍在视口内会继续自动加载，不必等用户再滚一次。
+
+- 侧边栏（`Shell.tsx`）：「工作区 / 对话」两组各自持有 `items + total` 与独立 `offset`，
+  两个请求并发（`kind=workspace` / `kind=plain`），互不影响；
+- 历史记录页：输入框 300ms 防抖后把关键词作为 `q` 发服务端；请求带序号，
+  搜索词变化后旧响应一律丢弃，避免慢响应覆盖新结果。
 
 ---
 
@@ -309,7 +336,92 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 ---
 
-## 十、已知设计权衡与问题
+## 十、内置工具与权限模型（app/agent_tools.py）
+
+「Agent 工具」开关（前端开关 × 服务端 `AGENT_TOOLS_ENABLED` 总开关，默认关）开启时，
+在 `medical_rag_search`/`web_search` 之外注册 AgentScope 内置工具：Bash、Read、Write、Edit、
+Glob、Grep、TaskCreate/Get/List/Update（PowerShell 仅 Windows 注册）。
+
+工作区有两种形态（`resolve_workspace`，存 `conversation_settings.workspace_root`）：
+
+| 形态 | 目录 | 说明 |
+| --- | --- | --- |
+| 默认（无设置） | `backend/workspaces/<会话id>/`（自动创建） | 会话隔离；产出文件经 `/workspaces/<会话id>/<文件名>` 静态提供（与 `/files` 同安全水位） |
+| 会话自选（workspace_picker.py） | 用户自选的本机目录（不 mkdir） | DeepSeek Harness 式交互：后端跑在本机时，点「工作区」由后端弹**系统原生目录选择框**（macOS `osascript` 的 `choose folder`、Linux `zenity`），选完路径落库为该会话工作区（Bash 起始目录 + 写入自动放行区，改用 HOST 版提示词，无静态下载链路）。`validate_workspace_root` 校验：绝对路径、存在且是目录、不在敏感清单（.git/.ssh/.gnupg 等）。选框弹在**后端所在机器**屏幕——本机部署即用户本人，远程部署该形态退化（对话框弹在服务器上）；多用户部署时任何登录用户均可触发（进程级串行），信任边界由部署者把握 |
+
+### 10.1 权限模式：请求侧可切换，默认 DEFAULT，会话记住选择
+
+权限上下文经 `AgentState.permission_context` 注入，模式由 `ChatRequest.permission_mode` 指定，
+**生效优先级：会话设置（conversation_settings.permission_mode）> 请求参数 > default**（服务端权威）。
+前端仅工作区会话显示选择器（chip + Dropdown），改动即 `PUT /conversations/{id}/permission-mode`
+落库。工作区会话自动开启 Agent 工具（前端发送 `agent_tools = !!workspace_root`，无手动开关），
+工作区在侧边栏「工作区」组标题旁的 + 图标中选定（侧边栏无独立新建按钮；组头常驻，
+零工作区时也可新建。先弹原生选框，取消零副作用；选定后
+`PUT /workspace` 已设置即 409，**不可更改**）。侧边栏「工作区」组内每条会话只展示
+**目录名**（取 `workspace_root` 最末级，悬停 title 给全路径），不展示会话标题。
+BYPASS（跳过全部安全检查）不开放。
+
+| 模式 | 行为 |
+| --- | --- |
+| `default` | 未授权操作产出 ASK → 推确认卡片给前端，应答后续跑；超时自动拒绝（见 10.2） |
+| `accept_edits` | 工作区写入免确认，其余同 `default` |
+| `explore` | 只读模式，一切修改直接拒绝 |
+| `dont_ask` | 无交互场景：ASK 一律转 DENY（无人值守行为） |
+
+各模式共同的裁决基底：Read/Glob/Grep 只读放行；Task 四件套恒 ALLOW；Write/Edit 工作目录内
+自动放行（仅 ACCEPT_EDITS/DONT_ASK，DEFAULT 下会 ASK）；Bash 只读白名单放行、文件变更命令
+仅限工作目录；deny 规则最高优先、危险命令等 bypass-immune 安全 ASK 无法被 allow 规则豁免。
+
+### 10.2 确认链路（park & resume，app/confirm.py）
+
+AgentScope 的 ASK 是 park-and-resume 模型：`reply_stream` 产出 `RequireUserConfirmEvent` 后
+本轮自然结束（parked 状态留在 Agent 实例的 state 里），不悬挂协程。本项目对接方式：
+
+1. agent.py 的事件循环收到该事件 → SSE 推 `permission_ask`（只含工具名与参数摘要，
+   工具调用权威副本不出服务端，前端只回布尔值——防伪造）；
+2. SSE 请求内 `await` ConfirmHub 的 asyncio.Event（进程内协调器），同一请求全程保活 parked Agent；
+3. 前端卡片调 `POST /api/conversations/{id}/permissions/confirm` 应答 → 唤醒等待方 →
+   以 `UserConfirmResultEvent` 为输入对同一 Agent 再次 `reply_stream()` 续跑；
+4. 「总是允许」（always=true）：建议规则（suggested_rules）随确认事件喂给引擎（本 reply 内
+   立即生效），同时存入 ConfirmHub 的会话规则表，后续轮次新建 Agent 时重放进 permission_context；
+5. 无人应答超时（`PERMISSION_CONFIRM_TIMEOUT_SECONDS`，默认 120s）按拒绝续跑——模型收到
+   denied 结果继续生成，流不会悬挂；SSE 断开（GeneratorExit）时清理登记。
+
+限制：ConfirmHub 与会话规则均为进程内状态，多副本部署需换共享存储（与验证码存储同批改造）。
+
+### 10.3 deny 规则（所有模式最高优先级）
+
+deny 规则在权限引擎中先于只读放行与工具自身判定生效，清单在 `agent_tools.py:_deny_patterns()`：
+
+- 敏感路径 glob：`**/.env*`、`**/*.db`、`**/.git*`、`**/.ssh*`、`**/.aws*`、`**/*.pem`、`**/id_rsa*`；
+- 应用自身目录：`os.listdir(backend/)` 动态枚举除 `workspaces/` 外的全部顶层条目生成
+  `f"{backend_dir}/{name}*"`（fnmatch 的 `*` 跨 `/`，覆盖子树）——源码、`.env`、上传图片、
+  日志、依赖清单全部封禁，新增文件自动纳入保护；工作区是唯一豁免。
+
+Read/Write/Edit 按 `file_path` 匹配，Glob/Grep 按其 `path` 参数匹配（后者只在模型显式传 path 时
+拦得住，保护有限）。Bash 不配 deny 规则（其规则是命令子串匹配，易误伤），依赖框架内置的
+危险命令黑名单 + 工作目录限制 + DONT_ASK 转拒。
+
+本机开发逃生门：`AGENT_TOOLS_BASH_ALLOW_PREFIXES`（逗号分隔的命令子串，如 `open -a`）会生成
+Bash allow 规则，放行 DONT_ASK 兜底本会拒绝的命令（如让 Friday 打开本机应用）。allow 在
+deny/安全检查之后判定，放不进危险命令；命令仍在后端所在机器上执行，勿在多用户部署中开启。
+
+### 10.4 已知限制（非硬隔离）
+
+1. **框架把服务器进程 cwd 也当工作目录**（`ToolBase._path_in_allowed_working_path` 无条件并入
+   `os.getcwd()`）：Bash 对 cwd（backend/）内的文件命令可写——Write/Edit 路径已被 deny 封住，
+   但 Bash 侧无法用路径规则表达同等封禁，属已知残留；
+2. Bash 只读白名单命令可读宿主上未被 deny 命中的普通文件（如 /etc/hosts）；
+3. 任务列表存在 `AgentState.tasks_context`，Agent 每轮重建 → **仅单次回复内有效**（单次回复的
+   多步规划够用）；跨轮持久化需把 tasks_context 序列化进 conversation，留作后续；
+4. 硬隔离升级路径：把工具的 `backend` 换成 `DockerWorkspace` 等沙箱后端（AgentScope 原生支持），
+   本次未做。
+
+边界行为由 `tests/test_agent_tools.py` 锁定（deny 覆盖面 + 引擎裁决 + chip 摘要取值）。
+
+---
+
+## 十一、已知设计权衡与问题
 
 | # | 事实 | 影响 | 计划 |
 | --- | --- | --- | --- |

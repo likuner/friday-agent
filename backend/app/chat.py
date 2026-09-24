@@ -14,11 +14,12 @@ from sqlalchemy.orm import selectinload
 from .agent import agent_service
 from .auth import current_user
 from .config import settings
+from .confirm import confirm_hub
 from .context import build_context_window
 from .db import SessionLocal, get_db
 from .memory import extract_user_memory, load_memory_block, messages_since_extract
-from .models import Conversation, Message, User
-from .schemas import ChatRequest
+from .models import Conversation, ConversationSetting, Message, User
+from .schemas import ChatRequest, PermissionConfirmRequest
 from .summarizer import update_rolling_summary
 
 logger = logging.getLogger("friday.chat")
@@ -61,6 +62,14 @@ async def chat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话不存在")
     if not payload.content.strip() and not payload.attachments:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="消息内容不能为空")
+
+    # 会话设置：工作区（Agent 内置工具的写自动放行区）+ 记住的权限模式。
+    # 生效优先级：会话记住的模式 > 请求参数 > default（服务端权威，前端漏传也一致）。
+    setting = await db.scalar(
+        select(ConversationSetting).where(ConversationSetting.conversation_id == conversation.id)
+    )
+    workspace_root = setting.workspace_root if setting else None
+    permission_mode = (setting.permission_mode if setting else None) or payload.permission_mode or "default"
 
     # 附件只存文件名，图片本体在 backend/files 里
     user_message = Message(conversation_id=conversation.id, role="user", content=payload.content, meta={"attachments": payload.attachments})
@@ -112,6 +121,10 @@ async def chat(
                 web_search=payload.web_search,
                 attachments=payload.attachments,
                 memory_block=memory_block,
+                agent_tools=payload.agent_tools,
+                permission_mode=permission_mode,
+                workspace_root=workspace_root,
+                user_id=user.id,
             ):
                 # 思考过程单独收集，不混进正文，前端才能折叠展示
                 if event.get("type") == "thinking":
@@ -186,3 +199,25 @@ async def chat(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/{conversation_id}/permissions/confirm")
+async def confirm_permission(
+    conversation_id: UUID,
+    payload: PermissionConfirmRequest,
+    user: User = Depends(current_user),
+) -> dict[str, bool]:
+    """应答 SSE 推来的权限确认卡片：唤醒同一会话挂起等待的流式请求。
+
+    只回布尔值——被确认的工具调用副本始终留在服务端（防伪造）。
+    always=true 时把建议规则存为会话级「总是允许」，后续轮次自动放行。
+    """
+    pending = confirm_hub.settle(conversation_id, user.id, payload.approved, payload.always)
+    if pending is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前没有等待确认的请求")
+    logger.info(
+        "节点[权限应答] conversation=%s approved=%s always=%s calls=%s",
+        conversation_id, payload.approved, payload.always,
+        [call.get("name") for call in pending.calls],
+    )
+    return {"ok": True}

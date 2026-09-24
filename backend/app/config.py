@@ -34,6 +34,19 @@ class Settings(BaseSettings):
     memory_enabled: bool = True
     memory_extract_min_messages: int = 1
     memory_max_tokens: int = 500
+    # Agent 内置工具（Bash/文件读写/任务四件套）：服务端总开关（默认开）。
+    # 请求侧还需 ChatRequest.agent_tools 同时为真才注册（前端仅工作区会话开启）。
+    # DONT_ASK 权限模式：写入仅限每会话工作区目录，敏感路径由 deny 规则封禁，
+    # Bash 危险命令自动拒绝；非硬隔离（详见 ARCHITECTURE.md 权限模型一节）。
+    agent_tools_enabled: bool = True
+    workspaces_dir: str = "workspaces"
+    # Bash 命令放行前缀（逗号分隔，子串匹配，如 "open -a,osascript"）：
+    # DONT_ASK 模式下非白名单命令一律拒绝；想让 Friday 打开本机应用等场景可显式放行。
+    # 仅建议本地开发使用——该放行对所有登录用户生效，且命令在后端所在机器上执行。
+    agent_tools_bash_allow_prefixes: str = ""
+    # 权限确认（ASK）超时秒数：DEFAULT/ACCEPT_EDITS 模式下前端确认卡片无人应答，
+    # 超时后按「拒绝」续跑（模型收到 denied 结果继续生成），不会悬挂请求。
+    permission_confirm_timeout_seconds: int = 120
     medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
     rag_top_k: int = 4
     rag_min_score: float = 0.0

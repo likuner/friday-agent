@@ -34,3 +34,6 @@ async def init_db() -> None:
         await connection.execute(
             text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS memory_extracted_upto UUID")
         )
+        await connection.execute(
+            text("ALTER TABLE conversation_settings ADD COLUMN IF NOT EXISTS permission_mode TEXT")
+        )
