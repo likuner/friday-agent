@@ -86,8 +86,10 @@ API 文档：<http://localhost:8000/docs>
 ## 医学 RAG
 
 `app/agent.py` 的系统提示词要求 Agent 对医疗/医学/健康类问题先调用 `medical_rag_search`
-检索本地医学文献向量库（RAG），再结合检索结果作答并注明来源；非医学问题不调用该工具。
-工具实现见 `app/rag.py`（med-pgvector + 智谱 embedding-3）。
+检索本地医学文献库（Elasticsearch 混合检索：稠密+BM25 RRF 融合 → rerank 精排），
+再结合检索结果作答并注明来源；非医学问题不调用该工具。
+工具实现见 `app/rag.py`（本地 Elasticsearch 混合检索 + 智谱 embedding-3 向量化与 rerank 精排），
+完整流程说明见根目录 [`RAG.md`](../RAG.md)。
 
 ## 检查
 

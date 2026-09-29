@@ -27,7 +27,7 @@
 ```
 backend/
 ├── .env                        # 环境变量（密钥、模型、数据库连接，不入库）
-├── requirements.txt            # 依赖清单（fastapi/agentscope/asyncpg/pgvector 生态）
+├── requirements.txt            # 依赖清单（fastapi/agentscope/asyncpg/elasticsearch 生态）
 ├── logs/                       # 运行日志与评测报告（backend.log / eval_*.json）
 ├── files/                      # 上传图片存储目录（/files 静态服务根）
 ├── scripts/
@@ -51,7 +51,7 @@ backend/
     ├── agent_logging.py        # AgentLoggingMiddleware：Agent 执行段节点日志（模型/工具/耗时/token，挂载于 Agent）
     ├── agent_tools.py          # 内置工具注册与权限边界：工具清单 + 权限上下文 + deny 规则
     ├── workspace_picker.py     # 会话工作区：系统原生目录选择框（osascript/zenity）+ 路径校验
-    ├── rag.py                  # 医学文献向量检索：智谱 embedding + pgvector（核心）
+    ├── rag.py                  # 医学文献混合检索：ES 稠密+BM25/RRF 融合 + 智谱 rerank（核心）
     ├── websearch.py            # 联网搜索：web_search 工具转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     └── files.py                # 图片上传/解析：内容嗅探校验 + UUID 落盘 + 静态服务
 ├── workspaces/                    # Agent 内置工具的会话工作区（/workspaces/<会话id>/ 静态服务，运行时生成）
@@ -218,62 +218,80 @@ backend/
 
 ## 五、RAG 检索实现（核心链路）
 
-### 5.1 三层结构（app/rag.py）
+> 完整展开（分步详解 / 索引契约 / 日志字段 / 运维排障 / 评测）见根目录 [`RAG.md`](../RAG.md)，本节保留架构摘要。
+
+### 5.1 检索链路（app/rag.py，Elasticsearch 混合检索）
 
 ```
 模型层    Agent（ReAct 循环）── 决定是否调用、生成检索词、消费检索结果
              │  FunctionTool 包装（toolkit 注册，权限 ALLOW）
-工具层    medical_rag_search(query, top_k=4) → str
+工具层    medical_rag_search(query, top_k=3) → str
              │  容错：检索失败返回错误说明而非抛异常（不让工具炸掉 Agent 循环）
              │  空结果：明确提示"未找到文献"，要求模型声明后基于自身知识回答
 编排层    rag_search(query, top_k) → list[dict]
-             │  节点日志（开始/完成/命中/异常）+ min_score 过滤
-基础设施  embed_query() ── httpx → 智谱 /embeddings（embedding-3，dimensions=512）
-          _get_pool()   ── asyncpg 连接池（懒加载 + 双检锁，1~4 连接）
+             │  ① embed_query()  httpx → 智谱 /embeddings（embedding-3，dimensions=1024）
+             │  ② _hybrid_recall()  ES 两路并行召回（各取 rag_recall_k=20）：
+             │     knn 稠密（dense_vector cosine）+ BM25 稀疏（IK 分词 match chunk_text），
+             │     应用层 RRF 融合（score = Σ 1/(60+rank)）取前 rag_candidate_k=10 条候选
+             │  ③ _rerank()  httpx → 智谱 /rerank（rerank 模型）交叉编码精排取 top_k=3
+             │  节点日志（开始/向量化/融合完成/重排/完成/命中/异常）+ min_score 过滤
+基础设施  _get_es_client() ── AsyncElasticsearch 懒加载单例（双检锁，
+             basic_auth + 自签证书不校验，索引 medical_chunks 为别名→medical_chunks_v2）
 ```
 
 ### 5.2 关键实现细节
 
 1. **查询向量化**（`embed_query`）：POST `{embedding_base_url}/embeddings`，
-   `{"model": "embedding-3", "input": [text], "dimensions": 512}`——`dimensions` 必须与
-   库内 `chunks.embedding vector(512)` 维度一致；
-2. **向量检索 SQL**：asyncpg 不原生支持 vector 类型，把 512 维浮点拼成字面量后显式转换：
-
-   ```sql
-   SELECT c.chunk_text, d.title, d.source_name, d.source_url,
-          1 - (c.embedding <=> $1::vector) AS score      -- 余弦距离转相似度
-   FROM chunks c JOIN documents d ON d.id = c.document_id
-   ORDER BY c.embedding <=> $1::vector
-   LIMIT $2
-   ```
-
-   命中 `chunks` 表的 HNSW（vector_cosine_ops）索引；结果按 `rag_min_score` 过滤
-   （当前默认 0.0，即全保留——见 §10 已知问题）；
-3. **工具 schema 即函数签名**：`FunctionTool` 从 `medical_rag_search` 的签名与 docstring
+   `{"model": "embedding-3", "input": [text], "dimensions": 1024}`——`dimensions` 必须与
+   ES `embedding` 字段（dense_vector 1024 维 cosine）一致；
+2. **两路召回**（`_hybrid_recall`）：knn 查询（`k=10, num_candidates=100`，命中 HNSW）
+   与 BM25 `match` 查询（`chunk_text` 用 ik_max_word 索引 / ik_smart 检索）并行发出
+   （`asyncio.gather`），各自取前 10；
+3. **RRF 在应用层做**：ES 的 RRF retriever 是**付费许可功能**（Basic license 返回 403
+   `current license is non-compliant for [RRF]`），故客户端按
+   `score = Σ 1/(60 + rank)` 融合两路秩，数学上与服务端 RRF 等价，且免许可依赖；
+4. **rerank 精排**（`_rerank`）：POST `{embedding_base_url}/rerank`，
+   `{"model": "rerank", "query": …, "documents": [候选 chunk_text], "top_n": top_k}`，
+   按 `results[].relevance_score` 降序取前 top_k（实测能把 RRF 第 8~10 名的正确文档
+   精准提进前 3）；调用失败自动降级为 RRF 序并打告警日志，检索不中断；
+5. **过滤与阈值**：`rag_min_score` 现作用于 rerank 分数（0~1），默认 0.0 全保留；
+6. **工具 schema 即函数签名**：`FunctionTool` 从 `medical_rag_search` 的签名与 docstring
    自动提取 JSON Schema 给模型；docstring 同时承担「何时该调用」的指令；
-4. **权限显式放行**：`PermissionDecision(behavior=ALLOW)`——AgentScope 权限引擎默认要求
+7. **权限显式放行**：`PermissionDecision(behavior=ALLOW)`——AgentScope 权限引擎默认要求
    人工确认工具执行，无头 SSE 场景必须显式允许，否则事件流停在 `REQUIRE_USER_CONFIRM`；
-5. **检索词由模型生成**：模型会自主把中文问题改写成英文医学检索词（甚至多角度并行多次检索），
-   跨语言场景实测 Top 相似度可达 0.63~0.65。
+8. **检索是 Agentic 的**：日志里的 query 是模型改写提炼的中文关键词，不是用户原话
+   （关键词化可提高两路召回命中）；系统提示词（prompts.py）明确允许"必要时从多个角度
+   多次调用"，因此一次用户提问常出现多条检索日志（如"病名+症状""病名+治疗"各查一次），
+   每条都是完整的向量化→融合→重排链路。
 
-### 5.3 一次完整检索的节点日志
+### 5.3 索引与数据
+
+- 索引 `medical_chunks_v2`（别名 `medical_chunks`，mapping 存档于
+  `scripts/es/medical_chunks_v2.mapping.json`）：`embedding` dense_vector(1024, cosine,
+  bbq_hnsw) + `chunk_text`/`title`（IK 分析器）+ `source`/`source_url`（keyword）；
+- 别名切换的由来：语料由外部项目导入（初版 `chunk_text` 为默认 standard 分析器，
+  中文 BM25 只能单字切分），装好 IK 插件后经 `_reindex` 重建为 IK 分析器索引并切别名，
+  向量与 `_id` 原样保留；
+- 旧 pgvector 库（med-pgvector 容器，5433）仅作原始语料留存，运行时不再访问。
+
+### 5.4 一次完整检索的节点日志
 
 ```
-节点[工具调用]  model 自主决策调用工具 name=medical_rag_search call_id=call_01_…
-节点[RAG检索开始] query="genetics of Parkinson's disease inherited…" top_k=5
-节点[RAG向量化] model=embedding-3 dims=512 latency=0.28s
-节点[RAG检索完成] hits=5 kept=5 top_score=0.6518 latency=0.28s
-节点[RAG命中] #1 score=0.6518 title=… snippet=…          （DEBUG 级）
-节点[工具参数] call_id=… args={"query": "…", "top_k": 5}
-节点[工具结果] call_id=… 工具结果已返回给模型
+节点[RAG检索开始] query="阿片类药物过量如何急救" candidates=10 top_k=3
+节点[RAG向量化] model=embedding-3 dims=1024 latency=0.27s
+节点[RAG融合完成] hits=10 rrf_top='阿片类药物过量'
+节点[RAG重排] model=rerank docs=10 top_n=3 latency=0.33s best=1.000000
+节点[RAG检索完成] rerank=3 kept=3 top_score=1.000000 latency=0.65s
+节点[RAG命中] #1 rerank=1.000000 rrf_rank=10 title=… snippet=…
 ```
 
-### 5.4 已知问题
+### 5.5 评测与已知问题
 
-- **嵌入模型失配**：查询向量用 GLM embedding-3@512，而语料入库时使用了另一个 512 维模型
-  （自检索校验证明存储无损，跨模型查询失配）。中文裸查询 Top 分仅 ~0.09；模型改写英文检索词后
-  回升到 0.63+。根治方案：用同一模型重建语料（评测脚本已能量化验证）；
-- 中文裸查直接进 `rag_search` 的场景（评测脚本）分数失真，属预期内。
+- `scripts/eval_rag.py`：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@4=1.0、MRR=0.944
+  （rerank 后全命中；旧英文关键词金标针对英文标题语料，已按中文语料重写）；
+- rerank 分数普遍接近 1.0，区分度有限，`top_score` 指标参考意义下降；
+- 语料 embedding 是否与 embedding-3 同源仍存疑（历史失配问题），当前由 BM25 路 +
+  rerank 兜底补足；如需根治可用 embedding-3 重建语料向量。
 
 ---
 
@@ -319,7 +337,7 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 | 层 | 实现 | 内容 |
 | --- | --- | --- |
-| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger；Agent 执行段由 agent_logging.py 的 `AgentLoggingMiddleware` 产出（挂载于 `Agent(middlewares=...)`），服务层/工具内部日志仍在各模块 | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / Agent返回（含轮次·整轮 token 合计·耗时） / 模型调用·返回（含每轮 token 用量·缓存命中） / 工具调用（含参数） / 工具结果（含状态·耗时） / RAG连接 / RAG向量化 / RAG检索开始·完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 记忆合并（含合并后全文）/ 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
+| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger；Agent 执行段由 agent_logging.py 的 `AgentLoggingMiddleware` 产出（挂载于 `Agent(middlewares=...)`），服务层/工具内部日志仍在各模块 | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / Agent返回（含轮次·整轮 token 合计·耗时） / 模型调用·返回（含每轮 token 用量·缓存命中） / 工具调用（含参数） / 工具结果（含状态·耗时） / RAG连接 / RAG向量化 / RAG检索开始 / RAG融合完成 / RAG重排（重排异常自动降级 RRF 序）/ RAG检索完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 记忆合并（含合并后全文）/ 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
 | 分布式追踪 | tracing.py + agent.py 的 `TracingMiddleware()` | OTLP（gRPC 4317 / HTTP 3000）导出，AgentScope Studio 可直接可视化 trace 树、token 用量、耗时；`tracing_enabled=false` 时零开销短路 |
 
 日志设计约定：**节点[名称]** 前缀统一格式，每条链路可凭 `conversation` / `call_id` 串起全轨迹。
@@ -330,7 +348,7 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 | 脚本 | 用途 | 备注 |
 | --- | --- | --- |
-| `scripts/eval_rag.py` | RAG 检索评测：8 条 golden 查询，Hit@K / MRR / 平均 Top 分 | LLM 裁判需 `EVAL_JUDGE_API_KEY`（留空自动跳过）；报告 `logs/eval_rag.json` |
+| `scripts/eval_rag.py` | RAG 检索评测：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@K / MRR / 平均 Top 分 | LLM 裁判需 `EVAL_JUDGE_API_KEY`（留空自动跳过）；报告 `logs/eval_rag.json` |
 | `scripts/eval_agent.py` | Agent 行为评测：医学问题应触发工具 / 非医学不应触发；agentscope `ConsoleRenderer` 可视化运行轨迹 | 实测 3/3 通过；报告 `logs/eval_agent.json` |
 | `scripts/cleanup_files.py` | 孤儿附件清理（按引用判断，只预览可确认） | 见 ISSUES.md P1 附件管理 |
 
@@ -427,7 +445,7 @@ deny/安全检查之后判定，放不进危险命令；命令仍在后端所在
 | --- | --- | --- | --- |
 | 1 | `agent_service = AgentService()` 进程级单例，Agent 自带对话状态；`stream()` 只取 `messages[-1]`，传入的 `history` 是死参数 | 跨会话/跨用户记忆串味（已两次实证）、重启失忆、无法多副本 | 无状态化：每轮显式回放库中历史 + token 预算（ISSUES.md §1.1，第一优先级） |
 | 2 | chat.py 每事件 `asyncio.sleep(0.05)` 人为限速 | 长回答整体被拖慢 | 移除，仅保留前端打字机节奏 |
-| 3 | RAG 嵌入模型与建库模型不一致 | 中文裸查询检索质量坍塌（评测 Hit@4=0） | 统一模型并重建语料；评测脚本已可量化验证 |
+| 3 | RAG 语料向量与查询模型（embedding-3）是否同源存疑（历史失配） | 稠密路区分度受损；已由 BM25 稀疏路 + rerank 兜底补足（混合检索下评测 Hit@4=1.0） | 根治：用 embedding-3 重建语料向量（评测脚本可量化验证） |
 | 4 | 验证码存进程内存、附件存本地磁盘、`create_all` 建表 | 多副本部署阻塞 | Redis / 对象存储 / Alembic |
 | 5 | 无测试、无 CI | 重构风险高 | 先补鉴权/会话/SSE 三条主链路测试（ISSUES.md 第一批） |
 

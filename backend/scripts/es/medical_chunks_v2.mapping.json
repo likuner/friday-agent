@@ -1,0 +1,18 @@
+{
+  "settings": {"index": {"number_of_shards": 1, "number_of_replicas": 0}},
+  "mappings": {
+    "properties": {
+      "chunk_text": {"type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart"},
+      "title": {"type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart"},
+      "embedding": {"type": "dense_vector", "dims": 1024, "index": true, "similarity": "cosine", "index_options": {"type": "bbq_hnsw", "m": 16, "ef_construction": 100}},
+      "source": {"type": "keyword"},
+      "source_url": {"type": "keyword"},
+      "lang": {"type": "keyword"},
+      "document_id": {"type": "keyword"},
+      "chunk_index": {"type": "integer"},
+      "char_length": {"type": "integer"},
+      "token_count": {"type": "integer"},
+      "created_at": {"type": "date"}
+    }
+  }
+}

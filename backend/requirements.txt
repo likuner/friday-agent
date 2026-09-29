@@ -16,3 +16,5 @@ opentelemetry-exporter-otlp==1.44.0
 opentelemetry-semantic-conventions==0.65b0
 mcp==1.30.0
 openai==1.59.9
+# RAG 混合检索：本地 Elasticsearch 9.x（knn 稠密 + BM25/IK 稀疏 + RRF 融合）
+elasticsearch[async]==9.1.0

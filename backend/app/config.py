@@ -13,11 +13,12 @@ class Settings(BaseSettings):
     openai_model: str = "deepseek-chat"
     # 深度思考模式使用的模型（需支持 reasoning，如 deepseek-v4-flash）；留空则退化为提示词引导
     openai_thinking_model: str = "deepseek-v4-flash"
-    # RAG（医学文献向量检索）
+    # RAG（医学文献混合检索：ES 稠密 knn + BM25/IK 稀疏 → RRF 融合 top N → rerank-2 精排）
     zhipu_api_key: str = ""
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     embedding_model: str = "embedding-3"
     embedding_dimensions: int = 1024
+    rerank_model: str = "rerank"
     # 联网搜索：主模型 tool_call 触发 web_search 工具，转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-4-flash"
@@ -47,8 +48,20 @@ class Settings(BaseSettings):
     # 权限确认（ASK）超时秒数：DEFAULT/ACCEPT_EDITS 模式下前端确认卡片无人应答，
     # 超时后按「拒绝」续跑（模型收到 denied 结果继续生成），不会悬挂请求。
     permission_confirm_timeout_seconds: int = 120
+    # 本地 Elasticsearch（med-es 容器，已开 TLS + basic auth；自签证书默认不校验）
+    es_url: str = "https://localhost:9200"
+    es_username: str = "elastic"
+    es_password: str = ""
+    es_verify_certs: bool = False
+    es_index: str = "medical_chunks"
+    # 旧 pgvector 库（原始语料所在，运行时不再使用，仅作参考/对比）
     medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
-    rag_top_k: int = 4
+    # 单路召回深度（knn k 与 BM25 size）：应大于融合窗口，避免单路第 N+1 名之后的好文档出局
+    rag_recall_k: int = 20
+    # RRF 融合候选数（rerank 前的候选池大小）与 rerank 后最终保留条数
+    rag_candidate_k: int = 10
+    rag_top_k: int = 3
+    # rerank 相关性分数阈值（rerank-2 的 relevance_score，0~1）
     rag_min_score: float = 0.0
     # 可观测：OpenTelemetry 追踪（可接入 AgentScope Studio / Jaeger / Langfuse 等 OTLP 后端）
     tracing_enabled: bool = False

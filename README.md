@@ -30,7 +30,7 @@
 - FastAPI 0.115 + Uvicorn
 - AgentScope 2.0.8（Agent / Toolkit / 事件流）
 - SQLAlchemy 2.0 async + asyncpg + PostgreSQL 16
-- pgvector（医学文献向量检索）+ 智谱 `embedding-3`
+- Elasticsearch 9.x（医学文献混合检索：稠密 + BM25/IK 稀疏 + RRF 融合 + rerank 精排）+ 智谱 `embedding-3` / `rerank`
 - Pydantic Settings、PyJWT、pwdlib[argon2]、Pillow、httpx
 
 **前端**
@@ -100,7 +100,7 @@ friday-agent/
 | --- | --- |
 | Python | 3.12（3.11+ 可用） |
 | Node.js | 22（20+ 可用） |
-| Docker Desktop | 用于跑 PostgreSQL 与 pgvector |
+| Docker Desktop | 用于跑 PostgreSQL 与 Elasticsearch |
 
 ### 2. 启动数据库
 
@@ -110,16 +110,29 @@ docker compose up -d postgres
 docker compose ps
 ```
 
-**医学 RAG 还需要一个独立的 pgvector 实例**（`docker-compose.yml` 未包含，需单独启动）：
+**医学 RAG 还需要一个独立的 Elasticsearch 9.x 实例**（`docker-compose.yml` 未包含，需单独启动；语料库 `medical_chunks` 索引由外部项目导入维护）：
 
 ```bash
-docker run -d --name med-pgvector -p 5433:5432 \
-  -e POSTGRES_DB=medrag -e POSTGRES_USER=meduser -e POSTGRES_PASSWORD=medpass \
-  pgvector/pgvector:pg16
+docker run -d --name med-es -p 9200:9200 \
+  -e discovery.type=single-node -e ES_JAVA_OPTS=-Xms1g -Xmx1g \
+  -v med-es-data:/usr/share/elasticsearch/data \
+  -v med-es-config:/usr/share/elasticsearch/config \
+  docker.elastic.co/elasticsearch/elasticsearch:9.5.4
 ```
 
-该库需要预先导入文献语料，包含两张表：`documents`（标题 / 来源 / URL）与 `chunks`（文本块 + 向量）。
-未启动或不配置 `MEDRAG_DB_URL` 时，应用其余功能正常，只是医学问题检索不到文献。
+默认开启 TLS + basic auth（用户名 `elastic`，密码见启动日志，配置到 `backend/.env` 的 `ES_PASSWORD`）。
+BM25 稀疏检索依赖 IK 中文分词插件（plugins 目录不在卷上，容器重建后需重装）：
+
+```bash
+docker exec med-es bin/elasticsearch-plugin install --batch \
+  https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-9.5.4.zip
+docker restart med-es
+```
+
+索引契约：`chunk_text`（ik_max_word 索引 / ik_smart 检索）+ `embedding`（dense_vector 1024 维 cosine），
+字段映射见 `backend/scripts/es/medical_chunks_v2.mapping.json`；实际索引 `medical_chunks_v2`，
+`medical_chunks` 是指向它的别名（换分析器 reindex 后切换，完整检索流程见 [`RAG.md`](RAG.md)）。
+未启动或不配置 `ES_URL` 时，应用其余功能正常，只是医学问题检索不到文献。
 
 ### 3. 后端
 
@@ -166,10 +179,11 @@ npm run dev
 | `OPENAI_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
 | `OPENAI_MODEL` | `deepseek-chat` | 常规对话模型 |
 | `OPENAI_THINKING_MODEL` | `deepseek-v4-flash` | 深度思考模型，需支持 reasoning；留空则退化为提示词引导 |
-| `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化与联网搜索 |
-| `EMBEDDING_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 向量化接口 |
+| `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化、rerank 精排与联网搜索 |
+| `EMBEDDING_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 向量化与 rerank 接口地址 |
 | `EMBEDDING_MODEL` | `embedding-3` | 向量模型 |
 | `EMBEDDING_DIMENSIONS` | `1024` | 向量维度（需与语料入库时一致） |
+| `RERANK_MODEL` | `rerank` | 智谱 rerank 精排模型（复用 `ZHIPU_API_KEY`） |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 联网搜索的 GLM 接口地址 |
 | `GLM_MODEL` | `glm-4-flash` | 执行联网检索的 GLM 模型（免费；可换 `glm-4-air` 等） |
 | `GLM_SEARCH_ENGINE` | `search_std` | GLM 搜索引擎：`search_std` 0.01元/次 / `search_pro` 0.03元/次 |
@@ -179,9 +193,14 @@ npm run dev
 | `MEMORY_ENABLED` | `true` | 用户长期记忆总开关；无智谱密钥时抽取自动停用，读取注入不受影响 |
 | `MEMORY_EXTRACT_MIN_MESSAGES` | `1` | 会话新增多少条消息触发一次记忆抽取（`1` = 每轮判断） |
 | `MEMORY_MAX_TOKENS` | `500` | 用户记忆合并输出上限 |
-| `MEDRAG_DB_URL` | `postgresql://meduser:medpass@localhost:5433/medrag` | 文献向量库连接串 |
-| `RAG_TOP_K` | `4` | 单次检索返回条数 |
-| `RAG_MIN_SCORE` | `0.0` | 相似度过滤阈值 |
+| `ES_URL` | `https://localhost:9200` | 本地 Elasticsearch 地址（med-es 容器，TLS + basic auth） |
+| `ES_USERNAME` / `ES_PASSWORD` | `elastic` / 空 | ES 认证；密码必填 |
+| `ES_VERIFY_CERTS` | `false` | 自签证书默认不校验 |
+| `ES_INDEX` | `medical_chunks` | 文献块索引（别名，指向 `medical_chunks_v2`） |
+| `RAG_RECALL_K` | `20` | 单路召回深度（knn k 与 BM25 size），应大于融合窗口 |
+| `RAG_CANDIDATE_K` | `10` | RRF 融合候选池大小（rerank 前） |
+| `RAG_TOP_K` | `3` | rerank 精排后最终返回条数 |
+| `RAG_MIN_SCORE` | `0.0` | rerank 相关性分数过滤阈值（0~1） |
 | `TRACING_ENABLED` | `false` | 是否开启 OpenTelemetry 追踪 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP 端点；grpc 用 Studio 的 4317，http 填其 Web 端口（自动补 `/v1/traces`） |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc` 或 `http` |
@@ -360,6 +379,7 @@ npx tsc --noEmit   # 类型检查
 
 ## 相关文档
 
+- **RAG 检索实现文档（Elasticsearch 混合检索：稠密 + BM25/IK + RRF + rerank）**：[`RAG.md`](RAG.md)
 - **记忆系统实现文档（会话级 + 用户级）**：[`MEMORY.md`](MEMORY.md)
 - **问题盘点与演进方案（记忆 / 多模态 / CI-CD / 云上线）**：[`ISSUES.md`](ISSUES.md)
 - 后端细节与接口说明：[`backend/README.md`](backend/README.md)
