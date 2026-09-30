@@ -4,7 +4,8 @@ import { useId } from 'react';
 
 // 全站统一品牌标识：圆角方形徽标 + 白色「F」，顶臂末端接一颗闪光。
 // 纯内联 SVG：任意尺寸都清晰、不依赖字体与图标库，深浅色主题共用同一份，
-// 侧栏（32px）、空状态（56px）、消息头像（20px）都渲染这个组件，改一处即全站生效。
+// 侧栏（32px）、空状态（56px）、消息头像（20px）、登录页（44/28px）都渲染
+// 这个组件，改一处即全站生效。
 // 尺寸交给 className（h-8 w-8 之类）；发光用 drop-shadow 而不是 box-shadow——
 // 投影跟着徽标的圆角轮廓走，不会在四角露出方块直角。
 export default function Logo({ className = 'h-8 w-8' }: { className?: string }) {

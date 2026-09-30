@@ -5,6 +5,7 @@ import { App, Button, Form, Input, Tabs } from 'antd';
 import { LockOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { captcha, login, register } from '@/lib/api';
+import Logo from '@/components/Logo';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/store/auth';
 
@@ -43,13 +44,14 @@ export default function AuthPage({ initialMode = 'login' }: AuthPageProps) {
       </div>
       <section className="mx-auto grid w-full max-w-[980px] overflow-hidden rounded-[28px] bg-surface shadow-[0_32px_90px_-36px_rgba(57,79,170,.55)] sm:grid-cols-[.92fr_1.08fr]">
         <div className="hidden bg-gradient-to-br from-[#4d6bfe] via-[#5570ff] to-[#7c94ff] p-12 text-white sm:block">
-          <div className="grid h-11 w-11 place-items-center rounded-2xl bg-white/15 text-xl font-bold backdrop-blur">F</div>
+          <Logo className="h-11 w-11 drop-shadow-[0_10px_22px_rgba(13,26,80,.35)]" />
           <h1 className="mt-20 text-4xl font-semibold tracking-tight">Friday Agent</h1>
           <p className="mt-5 max-w-[300px] text-[15px] leading-7 text-blue-100">把复杂任务拆开、记住上下文，并以流式方式陪你完成每一步。</p>
           <div className="mt-24 text-sm text-blue-100">安全登录 · 会话持久化 · AgentScope 驱动</div>
         </div>
         <div className="p-7 sm:p-12">
-          <div className="mb-8 sm:hidden">
+          <div className="mb-8 flex items-center gap-2.5 sm:hidden">
+            <Logo className="h-7 w-7" />
             <b className="text-xl">Friday Agent</b>
           </div>
           <Tabs activeKey={mode} onChange={(key) => setMode(key as 'login' | 'register')} items={[{ key: 'login', label: '登录' }, { key: 'register', label: '注册' }]} />
