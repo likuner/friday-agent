@@ -235,7 +235,8 @@ npm run dev
 | `POST` | `/api/conversations/{id}/messages` | **SSE** 流式发送消息 |
 | `DELETE` | `/api/conversations/{id}/messages/{message_id}` | 截断：删除该条消息及其后全部消息（编辑重发用） |
 | `POST` | `/api/files` | 上传图片（multipart，仅图片，≤5MB） |
-| `GET` | `/files/{name}` | 访问已上传图片（静态目录） |
+| `GET` | `/api/files/{name}` | 访问已上传图片（需登录，Bearer token） |
+| `GET` | `/api/workspaces/{conversation_id}/{path}` | 下载会话工作区内的工具产出文件（需登录且会话归属本人） |
 
 ### SSE 事件类型
 

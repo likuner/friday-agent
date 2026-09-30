@@ -16,8 +16,12 @@ _captchas: dict[str, tuple[str, int, str]] = {}
 
 
 def create_captcha() -> tuple[str, str]:
+    # 未被验证的条目不会走 verify 的 pop，这里在签发时清扫过期项，防止匿名无限刷接口撑大字典
+    now = int(time.time())
+    for stale in [k for k, (_, issued, _) in _captchas.items() if now - issued >= _CAPTCHA_TTL]:
+        _captchas.pop(stale, None)
     answer = "".join(random.choices(string.ascii_uppercase + string.digits, k=4)).lower()
-    issued = int(time.time())
+    issued = now
     nonce = secrets.token_urlsafe(18)
     signature = hmac.new(settings.jwt_secret.encode(), nonce.encode(), sha256).hexdigest()
     _captchas[nonce] = (answer, issued, signature)

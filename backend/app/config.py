@@ -1,4 +1,10 @@
+from pathlib import Path
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 已知弱密钥：命中即拒绝启动，防止漏配后静默用可预测值签发 token
+_WEAK_JWT_SECRETS = {"", "change-me", "replace-with-a-long-random-secret"}
 
 
 class Settings(BaseSettings):
@@ -69,7 +75,20 @@ class Settings(BaseSettings):
     # grpc 对应 Studio 的 OTEL_GRPC_PORT(4317)；http 对应其 Web 端口(默认 3000)
     otel_exporter_otlp_protocol: str = "grpc"
     otel_service_name: str = "friday-agent"
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # 锚定到 backend/.env 的绝对路径：否则从仓库根启动时 .env 按 CWD 查找会静默不加载，
+    # 全部配置落到代码默认值（含弱 jwt_secret）且无任何提示
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent / ".env"), extra="ignore"
+    )
+
+    @model_validator(mode="after")
+    def _reject_weak_jwt_secret(self) -> "Settings":
+        if self.jwt_secret.strip().lower() in _WEAK_JWT_SECRETS:
+            raise ValueError(
+                "JWT_SECRET 未配置或为弱默认值：请在 backend/.env 中设置随机长密钥"
+                "（可用 `openssl rand -hex 32` 生成）后重启"
+            )
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -68,8 +68,52 @@ export async function streamMessage(token: string, id: string, payload: object, 
   }
 }
 
-// 图片存在后端 /files 下，静态资源不在 /api 前缀里
-export const fileUrl = (name: string) => `${API_URL.replace(/\/api\/?$/, '')}/files/${name}`;
+// 后端源（去掉 /api 后缀），用于拼接非 /api 前缀的资源地址
+const API_ORIGIN = API_URL.replace(/\/api\/?$/, '');
+
+// 把模型回复里给出的相对路径（/api/workspaces/...）解析成完整后端地址
+export function resolveBackendUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+// 图片附件走鉴权路由 GET /api/files/{name}：<img> 标签带不上 Authorization，
+// 改为带 token 取 blob 后生成对象 URL。模块级缓存：同一张图在消息列表与
+// 预览里只拉一次；对象 URL 随页面生命周期存在，不做 revoke（受会话内图片数约束）
+const imageUrlCache = new Map<string, Promise<string>>();
+
+export function authImageUrl(token: string, name: string): Promise<string> {
+  const cached = imageUrlCache.get(name);
+  if (cached) return cached;
+  const task = fetch(`${API_URL}/files/${encodeURIComponent(name)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`图片加载失败（${response.status}）`);
+    return URL.createObjectURL(await response.blob());
+  });
+  imageUrlCache.set(name, task);
+  // 失败不进缓存，下次渲染还有重试机会
+  task.catch(() => imageUrlCache.delete(name));
+  return task;
+}
+
+// 下载会话工作区的工具产出文件（鉴权路由，路径形如 /api/workspaces/<cid>/<file>）：
+// 浏览器直链导航带不上 token，由前端拦截链接后取 blob 触发下载
+export async function downloadWorkspaceFile(token: string, path: string) {
+  const response = await fetch(resolveBackendUrl(path), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('文件下载失败');
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = decodeURIComponent(path.split('/').pop() || 'download');
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 // 应答权限确认卡片：approved=false 时模型收到 denied 结果并继续生成
 export async function confirmPermission(token: string, conversationId: string, approved: boolean, always = false) {

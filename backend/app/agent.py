@@ -217,11 +217,12 @@ class AgentService:
                 # 会话级「总是允许」规则重放（前端确认时勾选 always 落进来的）
                 apply_session_rules(permission_context, confirm_hub.session_rules(conversation_id))
                 state_kwargs["permission_context"] = permission_context
-                # 自选目录没有 /workspaces 静态下载链路，用 HOST 版提示词（告知本地路径）
+                # 自选目录没有工作区下载链路，用 HOST 版提示词（告知本地路径）
                 template = AGENT_TOOLS_PROMPT_HOST if workspace_root else AGENT_TOOLS_PROMPT
                 agent_tools_prompt = template.format(
                     workspace=workspace,
-                    public_prefix=f"/workspaces/{conversation_id}",
+                    # 产出文件下载走鉴权路由（前端会拦截该前缀链接做带 token 下载）
+                    public_prefix=f"/api/workspaces/{conversation_id}",
                 )
             # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
             state = AgentState(**state_kwargs)  # type: ignore[arg-type]

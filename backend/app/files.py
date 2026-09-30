@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 
 from .auth import current_user
@@ -39,6 +40,16 @@ def resolve_stored_image(name: str) -> tuple[Path, str] | None:
     return path, EXT_MEDIA[name.rsplit(".", 1)[1]]
 
 
+@router.get("/{name}")
+async def get_image(name: str, user: User = Depends(current_user)) -> FileResponse:
+    """获取已上传的图片：需登录；文件名走 SAFE_NAME 白名单解析，防路径穿越。"""
+    resolved = resolve_stored_image(name)
+    if resolved is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="图片不存在")
+    path, media_type = resolved
+    return FileResponse(path, media_type=media_type)
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def upload_image(file: UploadFile = File(...), user: User = Depends(current_user)) -> dict[str, object]:
     """上传一张图片，返回落盘文件名、访问 URL 与大小。"""
@@ -65,4 +76,4 @@ async def upload_image(file: UploadFile = File(...), user: User = Depends(curren
     FILES_DIR.mkdir(parents=True, exist_ok=True)
     (FILES_DIR / name).write_bytes(raw)
     logger.info("节点[图片上传] user=%s name=%s size=%s format=%s", user.username, name, len(raw), fmt)
-    return {"name": name, "url": f"/files/{name}", "size": len(raw)}
+    return {"name": name, "url": f"/api/files/{name}", "size": len(raw)}

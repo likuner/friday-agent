@@ -16,12 +16,17 @@ import fnmatch
 import logging
 import shutil
 from pathlib import Path
+from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .agent_tools import _SENSITIVE_PATTERNS
+from .agent_tools import WORKSPACES_DIR, _SENSITIVE_PATTERNS
 from .auth import current_user
-from .models import User
+from .db import get_db
+from .models import Conversation, User
 
 logger = logging.getLogger("friday.workspace")
 
@@ -100,3 +105,32 @@ async def pick_workspace(user: User = Depends(current_user)) -> dict[str, str | 
         return {"path": None}
     logger.info("节点[工作区选择] user=%s picked=%s", user.username, path)
     return {"path": path}
+
+
+@router.get("/{conversation_id}/{file_path:path}")
+async def get_workspace_file(
+    conversation_id: UUID,
+    file_path: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """下载会话工作区内的工具产出文件：需登录且会话归属本人。
+
+    路径做 containment 校验（resolve 后必须仍在本会话工作目录内），
+    防止 ``..`` 或子目录越界读到其他会话/宿主文件。
+    """
+    if not file_path.strip():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    conversation = await db.scalar(
+        select(Conversation).where(
+            Conversation.id == conversation_id, Conversation.user_id == user.id
+        )
+    )
+    # 归属不符与不存在同样回 404，不泄露会话是否存在
+    if conversation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    workspace = (WORKSPACES_DIR / str(conversation_id)).resolve()
+    target = (workspace / file_path).resolve()
+    if not target.is_relative_to(workspace) or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    return FileResponse(target, filename=target.name)

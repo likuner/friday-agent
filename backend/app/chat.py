@@ -192,7 +192,8 @@ async def chat(
                 conversation.id, event_count, len("".join(answer)), time.monotonic() - started, exc,
             )
             await db.rollback()
-            yield sse({"type": "error", "content": str(exc)})
+            # 异常原文可能带连接串/内部路径，只进服务端日志；前端拿到固定文案
+            yield sse({"type": "error", "content": "生成回复时出现错误，请稍后重试"})
 
     return StreamingResponse(
         generate(),

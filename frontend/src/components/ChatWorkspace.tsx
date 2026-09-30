@@ -6,7 +6,7 @@ import { App, Button, Dropdown, Image as AntdImage } from 'antd';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-import { conversation, confirmPermission, createConversation, fileUrl, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
+import { authImageUrl, conversation, confirmPermission, createConversation, downloadWorkspaceFile, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
 import ThemeToggle from '@/components/ThemeToggle';
 import Logo from '@/components/Logo';
 import { useAuth } from '@/store/auth';
@@ -42,7 +42,25 @@ const MAX_ATTACHMENTS = 9;
 // Markdown 渲染定制：引用来源等外链一律新标签页打开，避免把当前对话导航走
 const markdownComponents: Components = {
   a: ({ children, href }) => {
+    const token = useAuth((state) => state.token);
     const external = /^https?:\/\//i.test(href || '');
+    // 工作区产出文件（/api/workspaces/<cid>/<file>）是鉴权路由：
+    // 浏览器直接导航带不上 Authorization，拦截点击改为取 blob 后下载
+    if (href && /\/api\/workspaces\//.test(href)) {
+      return (
+        <a
+          href={href}
+          onClick={(event) => {
+            event.preventDefault();
+            if (token) {
+              downloadWorkspaceFile(token, href).catch((error) => console.warn('工作区文件下载失败', error));
+            }
+          }}
+        >
+          {children}
+        </a>
+      );
+    }
     return <a href={href} {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{children}</a>;
   },
 };
@@ -50,8 +68,21 @@ const markdownComponents: Components = {
 // 消息里的图片附件
 // 单张图片：文件缺失/被删时降级成占位块，避免浏览器显示裂图
 function MessageImage({ name }: { name: string }) {
+  const token = useAuth((state) => state.token);
+  const [src, setSrc] = useState<string>();
   const [failed, setFailed] = useState(false);
-  if (failed) {
+  useEffect(() => {
+    let alive = true;
+    setFailed(false);
+    setSrc(undefined);
+    if (!token) return;
+    authImageUrl(token, name).then(
+      (url) => { if (alive) setSrc(url); },
+      () => { if (alive) setFailed(true); },
+    );
+    return () => { alive = false; };
+  }, [token, name]);
+  if (failed || (!src && !token)) {
     return (
       <div className="flex h-[120px] w-[160px] flex-col items-center justify-center gap-1 rounded-xl border border-line bg-soft text-[11px] text-muted">
         <PictureOutlined />
@@ -59,10 +90,17 @@ function MessageImage({ name }: { name: string }) {
       </div>
     );
   }
+  if (!src) {
+    return (
+      <div className="flex h-[120px] w-[160px] items-center justify-center rounded-xl border border-line bg-soft text-muted">
+        <LoadingOutlined />
+      </div>
+    );
+  }
   // antd Image 自带预览（点击放大 / 缩放 / 旋转 / 下载），且跟随主题
   return (
     <AntdImage
-      src={fileUrl(name)}
+      src={src}
       alt="图片附件"
       onError={() => setFailed(true)}
       width={160}
@@ -81,6 +119,19 @@ function MessageImages({ names }: { names: string[] }) {
       {names.map((name) => <MessageImage key={name} name={name} />)}
     </div>
   );
+}
+
+// 待发送附件的缩略图：与消息内图片一样走鉴权取图（复用同一缓存）
+function AttachmentThumb({ name }: { name: string }) {
+  const token = useAuth((state) => state.token);
+  const [src, setSrc] = useState<string>();
+  useEffect(() => {
+    let alive = true;
+    if (!token) return;
+    authImageUrl(token, name).then((url) => { if (alive) setSrc(url); }, () => {});
+    return () => { alive = false; };
+  }, [token, name]);
+  return <img src={src} alt="待发送图片" className="h-16 w-16 rounded-lg border border-line bg-soft object-cover" />;
 }
 
 // 用户消息：图片单独展示在气泡之外，只有文字进蓝色气泡；气泡下方提供复制与编辑重发
@@ -583,7 +634,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map((item) => (
                 <div key={item.name} className="relative">
-                  <img src={fileUrl(item.name)} alt="待发送图片" className="h-16 w-16 rounded-lg border border-line object-cover" />
+                  <AttachmentThumb name={item.name} />
                   <button
                     type="button"
                     title="移除图片"
