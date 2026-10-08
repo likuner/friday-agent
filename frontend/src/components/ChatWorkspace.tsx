@@ -3,10 +3,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowDownOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DownOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
 import { App, Button, Dropdown, Image as AntdImage } from 'antd';
-import ReactMarkdown, { type Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
-import { authImageUrl, conversation, confirmPermission, createConversation, downloadWorkspaceFile, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
+import { authImageUrl, conversation, confirmPermission, createConversation, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
+import Markdown from '@/components/Markdown';
 import ThemeToggle from '@/components/ThemeToggle';
 import Logo from '@/components/Logo';
 import { useAuth } from '@/store/auth';
@@ -37,33 +35,6 @@ const STICK_THRESHOLD = 48;
 
 // 单条消息最多可带几张图片（与后端 ChatRequest.attachments 的上限保持一致）
 const MAX_ATTACHMENTS = 9;
-
-// 展示本轮的检索记录：一次回答可能并行检索多个角度，逐个显示实际检索词，避免看起来像重复 chip
-// Markdown 渲染定制：引用来源等外链一律新标签页打开，避免把当前对话导航走
-const markdownComponents: Components = {
-  a: ({ children, href }) => {
-    const token = useAuth((state) => state.token);
-    const external = /^https?:\/\//i.test(href || '');
-    // 工作区产出文件（/api/workspaces/<cid>/<file>）是鉴权路由：
-    // 浏览器直接导航带不上 Authorization，拦截点击改为取 blob 后下载
-    if (href && /\/api\/workspaces\//.test(href)) {
-      return (
-        <a
-          href={href}
-          onClick={(event) => {
-            event.preventDefault();
-            if (token) {
-              downloadWorkspaceFile(token, href).catch((error) => console.warn('工作区文件下载失败', error));
-            }
-          }}
-        >
-          {children}
-        </a>
-      );
-    }
-    return <a href={href} {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{children}</a>;
-  },
-};
 
 // 消息里的图片附件
 // 单张图片：文件缺失/被删时降级成占位块，避免浏览器显示裂图
@@ -246,6 +217,7 @@ function toolChipInfo(call: ToolCall): { icon: ReactNode; label: string } {
   }
 }
 
+// 展示本轮的检索记录：一次回答可能并行检索多个角度，逐个显示实际检索词，避免看起来像重复 chip
 function ToolCallChips({ calls }: { calls: ToolCall[] }) {
   if (!calls.length) return null;
   return (
@@ -585,9 +557,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                       )}
                       {item.content ? (
                         <div className="md">
-                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
-                            {item.content}
-                          </ReactMarkdown>
+                          <Markdown>{item.content}</Markdown>
                           {isStreamingThis && toolRunning && (
                             <div className="mt-1">
                               <StreamingHint label={BUILTIN_TOOL_NAMES.has(runningTool) ? '正在执行' : '正在检索'} />

@@ -11,12 +11,15 @@
     "@ant-design/nextjs-registry": "^1.3.0",
     "@ant-design/v5-patch-for-react-19": "^1.0.3",
     "antd": "^5.23.3",
+    "katex": "^0.16.47",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "^9.0.3",
+    "rehype-katex": "^7.0.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

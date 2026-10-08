@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import Providers from './providers';
 import 'antd/dist/reset.css';
+import 'katex/dist/katex.min.css';
 import './globals.css';
 
 export const metadata: Metadata = { title: 'Friday Agent', description: 'AI Agent 助手' };

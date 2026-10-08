@@ -132,3 +132,9 @@ button, input, textarea { font: inherit; }
 .md th, .md td { border: 1px solid rgb(var(--line)); padding: 6px 10px; text-align: left; }
 .md th { background: rgb(var(--table-head)); }
 .md code { background: rgb(var(--brand-soft)); border: 1px solid rgb(var(--line)); border-radius: 6px; padding: 1px 6px; color: rgb(var(--brand-text)); font-size: .92em; }
+
+/* 数学公式（KaTeX）：颜色随 currentColor 自动适配深浅主题；
+   宽公式在窄屏横向滚动，不撑破消息气泡 */
+.md .katex { font-size: 1.06em; }
+.md .katex-display { margin: 0 0 12px; overflow-x: auto; padding: 2px 0; }
+.md .katex-display:last-child { margin-bottom: 0; }
