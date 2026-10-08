@@ -557,7 +557,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                       )}
                       {item.content ? (
                         <div className="md">
-                          <Markdown>{item.content}</Markdown>
+                          <Markdown streaming={isStreamingThis}>{item.content}</Markdown>
                           {isStreamingThis && toolRunning && (
                             <div className="mt-1">
                               <StreamingHint label={BUILTIN_TOOL_NAMES.has(runningTool) ? '正在执行' : '正在检索'} />

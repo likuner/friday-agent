@@ -97,6 +97,24 @@ export function authImageUrl(token: string, name: string): Promise<string> {
   return task;
 }
 
+// markdown 正文里引用的工作区产出（/api/workspaces/...）同样带不上 Authorization：
+// 取 blob 生成对象 URL 给 <img> 用，按完整路径缓存，策略与 authImageUrl 一致
+const assetUrlCache = new Map<string, Promise<string>>();
+
+export function authAssetUrl(token: string, path: string): Promise<string> {
+  const cached = assetUrlCache.get(path);
+  if (cached) return cached;
+  const task = fetch(resolveBackendUrl(path), {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`资源加载失败（${response.status}）`);
+    return URL.createObjectURL(await response.blob());
+  });
+  assetUrlCache.set(path, task);
+  task.catch(() => assetUrlCache.delete(path));
+  return task;
+}
+
 // 下载会话工作区的工具产出文件（鉴权路由，路径形如 /api/workspaces/<cid>/<file>）：
 // 浏览器直链导航带不上 token，由前端拦截链接后取 blob 触发下载
 export async function downloadWorkspaceFile(token: string, path: string) {

@@ -124,7 +124,7 @@ button, input, textarea { font: inherit; }
 .md h2 { font-size: 1.26em; padding-bottom: 4px; border-bottom: 1px solid rgb(var(--line)); }
 .md h3, .md h4 { font-size: 1.1em; }
 .md hr { border: 0; border-top: 1px solid rgb(var(--line)); margin: 16px 0; }
-.md pre { margin: 0 0 12px; padding: 12px 14px; background: rgb(var(--code-bg)); color: #e6edff; border-radius: 12px; overflow-x: auto; white-space: pre; font-size: 13px; line-height: 1.7; }
+.md pre { margin: 0; padding: 12px 14px; background: rgb(var(--code-bg)); color: #e6edff; border-radius: 12px; overflow-x: auto; white-space: pre; font-size: 13px; line-height: 1.7; }
 .md pre code { background: none; border: 0; padding: 0; color: inherit; }
 .md blockquote { margin: 0 0 12px; padding: 4px 14px; border-left: 3px solid rgb(var(--accent-line)); background: rgb(var(--quote-bg)); border-radius: 0 10px 10px 0; color: rgb(var(--quote-text)); }
 .md a { color: rgb(var(--brand)); text-decoration: none; border-bottom: 1px dashed rgb(var(--accent-line)); }
@@ -132,6 +132,39 @@ button, input, textarea { font: inherit; }
 .md th, .md td { border: 1px solid rgb(var(--line)); padding: 6px 10px; text-align: left; }
 .md th { background: rgb(var(--table-head)); }
 .md code { background: rgb(var(--brand-soft)); border: 1px solid rgb(var(--line)); border-radius: 6px; padding: 1px 6px; color: rgb(var(--brand-text)); font-size: .92em; }
+
+/* 代码块外壳：包住 pre，承载右上角「语言 + 复制」（悬停浮现，触屏常显） */
+.md .code-block { position: relative; margin: 0 0 12px; }
+.md .code-block:last-child { margin-bottom: 0; }
+.md .code-head { position: absolute; top: 6px; right: 8px; display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity .15s; }
+.md .code-block:hover .code-head { opacity: 1; }
+@media (hover: none) { .md .code-head { opacity: 1; } }
+.md .code-lang { font-size: 11px; letter-spacing: .04em; color: rgba(230, 237, 255, .45); }
+.md .code-copy { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid rgba(230, 237, 255, .18); color: rgba(230, 237, 255, .75); background: rgba(230, 237, 255, .06); cursor: pointer; }
+.md .code-copy:hover { background: rgba(230, 237, 255, .14); }
+
+/* 代码高亮色板（hljs）：代码块固定深底（--code-bg 两主题同为深色），单色板即可 */
+.md pre .hljs-keyword, .md pre .hljs-selector-tag, .md pre .hljs-meta, .md pre .hljs-tag { color: #ff7b72; }
+.md pre .hljs-string, .md pre .hljs-regexp, .md pre .hljs-quote { color: #a5d6ff; }
+.md pre .hljs-comment { color: #8b949e; font-style: italic; }
+.md pre .hljs-number, .md pre .hljs-literal, .md pre .hljs-symbol, .md pre .hljs-bullet { color: #79c0ff; }
+.md pre .hljs-title, .md pre .hljs-title.function_, .md pre .hljs-built_in { color: #d2a8ff; }
+.md pre .hljs-title.class_, .md pre .hljs-type, .md pre .hljs-attr, .md pre .hljs-attribute, .md pre .hljs-variable, .md pre .hljs-template-variable, .md pre .hljs-params { color: #ffa657; }
+.md pre .hljs-section, .md pre .hljs-name, .md pre .hljs-selector-id, .md pre .hljs-selector-class { color: #7ee787; }
+.md pre .hljs-addition { color: #7ee787; }
+.md pre .hljs-deletion { color: #ff7b72; }
+.md pre .hljs-emphasis { font-style: italic; }
+.md pre .hljs-strong { font-weight: 600; }
+
+/* markdown 图片：宽度受限；鉴权/加载失败的文字占位代替裂图 */
+.md img { max-width: 100%; border-radius: 10px; }
+.md .md-img-fallback { display: inline-block; font-size: 12px; color: rgb(var(--muted)); padding: 6px 10px; background: rgb(var(--soft)); border: 1px solid rgb(var(--line)); border-radius: 8px; }
+
+/* mermaid 图表容器：居中展示，超宽横向滚动 */
+.md .mermaid-box { margin: 0 0 12px; padding: 14px; display: flex; justify-content: center; overflow-x: auto; background: rgb(var(--surface)); border: 1px solid rgb(var(--line)); border-radius: 12px; }
+.md .mermaid-box:last-child { margin-bottom: 0; }
+.md .mermaid-box svg { max-width: 100%; height: auto; }
+.md .mermaid-hint { font-size: 12px; color: rgb(var(--muted)); }
 
 /* 数学公式（KaTeX）：颜色随 currentColor 自动适配深浅主题；
    宽公式在窄屏横向滚动，不撑破消息气泡 */
