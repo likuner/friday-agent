@@ -104,6 +104,11 @@ friday-agent/
 
 ### 2. 启动数据库
 
+> **一键启动**：在项目根目录执行 `./start.sh` 可同时拉起 Docker 容器（postgres、med-es、med-kibana）、
+> 后端（:8000）与前端（:3000），日志和 PID 记录在 `.run/` 目录；对应的一键停止脚本为 `./stop.sh`
+> （只停容器不删数据卷）。首次执行会自动创建后端虚拟环境、安装前后端依赖；
+> `./start.sh --no-es` 可跳过 Elasticsearch 节省内存。以下为各步骤的手动说明。
+
 ```bash
 # 业务库（会话、消息、用户）
 docker compose up -d postgres
