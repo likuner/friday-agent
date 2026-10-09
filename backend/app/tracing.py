@@ -1,16 +1,16 @@
 """OpenTelemetry 追踪初始化。
 
-把 Agent 的运行信息（模型调用、工具调用、Agent 调用、耗时、token 用量等）以标准
-OTLP 协议导出，可直接被 **AgentScope Studio** 可视化，也可接 Jaeger / Langfuse /
+把 Agent 的运行信息（模型调用、token 用量、耗时等）以标准 OTLP 协议导出，
+可直接被 **AgentScope Studio** 可视化，也可接 Jaeger / Langfuse /
 Arize-Phoenix 等任意 OTLP 后端。
 
 关于接入方式的说明
 ------------------
-AgentScope 1.x 用 ``agentscope.init(studio_url=...)`` 上报；本项目使用的 **2.0.8
-已移除该 API**（包内不再有任何 studio 相关代码）。2.0 改为纯 OpenTelemetry 方案：
-只要配置好全局 ``TracerProvider``，挂在 Agent 上的
-``agentscope.middleware.TracingMiddleware`` 就会自动产出符合
-OpenTelemetry GenAI 语义约定的 span。
+LangGraph 迁移前由 ``agentscope.middleware.TracingMiddleware`` 产出符合
+OpenTelemetry GenAI 语义约定的 span；迁移后由自研的
+``app/tracing_callback.py``（LangChain BaseCallbackHandler）产出**基础版**
+span（模型调用级，属性带模型名/耗时/token），挂在 ChatDeepSeek 的
+callbacks 上。
 
 Studio 侧对外暴露的正是标准 OTLP 端点（见其官方开发文档）：
 
@@ -32,7 +32,7 @@ _configured = False
 def setup_tracing() -> bool:
     """按配置初始化全局 TracerProvider。
 
-    未启用或依赖缺失时返回 ``False``；此时 ``TracingMiddleware`` 会自动短路，
+    未启用或依赖缺失时返回 ``False``；此时 tracing_callback 不挂任何回调，
     对调用链几乎没有开销。
     """
     global _configured

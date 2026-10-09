@@ -4,9 +4,9 @@
 - 医学问题：模型应自主调用 medical_rag_search 工具，回答非空且含相关关键词；
 - 非医学问题：模型不应调用工具。
 
-运行轨迹用 agentscope 内置的 ConsoleRenderer 做终端可视化（逐事件渲染
-文本增量、思考、工具调用与工具结果）；LLM 裁判需要配置 EVAL_JUDGE_API_KEY，
-未配置时自动跳过（key 暂时留空，先跑通逻辑）。
+直接驱动 AgentService.stream() 的原生事件流（dict 事件，与 SSE 协议同构），
+--verbose 时在终端实时渲染思考/文本增量/工具调用；LLM 裁判需要配置
+EVAL_JUDGE_API_KEY，未配置时自动跳过。
 
 运行：.venv/bin/python scripts/eval_agent.py [--verbose]
 """
@@ -18,12 +18,9 @@ import os
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from agentscope.console import ConsoleRenderer  # noqa: E402
-from agentscope.event import EventType  # noqa: E402
-from agentscope.message import UserMsg  # noqa: E402
 
 from app.agent import AgentService  # noqa: E402
 from app.logging_config import setup_logging  # noqa: E402
@@ -78,34 +75,42 @@ async def judge_answer(query: str, answer: str) -> float | None:
 
 
 async def run_case(case: dict, verbose: bool) -> dict:
-    """跑单条用例：消费 agent 原生事件流，ConsoleRenderer 实时可视化。"""
+    """跑单条用例：消费 AgentService 原生事件流（与 SSE 协议同构的 dict 事件）。"""
     service = AgentService()
-    agent = service._get_agent(thinking=False, web_search=False)
-    if not agent:
-        raise RuntimeError("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
-
-    renderer = ConsoleRenderer(verbosity="default" if verbose else "quiet")
     answer_parts: list[str] = []
     tool_calls: list[str] = []
 
-    async for event in agent.reply_stream(UserMsg(name="user", content=case["query"])):
-        renderer.render(event)
-        if event.type == EventType.TEXT_BLOCK_DELTA:
-            answer_parts.append(event.delta)
-        elif event.type == EventType.TOOL_CALL_START:
-            tool_calls.append(event.tool_call_name)
-
+    async for event in service.stream(
+        conversation_id=uuid4(),  # 评测不落库：随机会话号即可（无内置工具时不触碰工作区）
+        replay=[],
+        summary=None,
+        content=case["query"],
+    ):
+        kind = event.get("type")
+        if kind == "text":
+            answer_parts.append(event.get("content", ""))
+            if verbose:
+                print(event.get("content", ""), end="", flush=True)
+        elif kind == "thinking":
+            if verbose:
+                print(f"\033[2m{event.get('content', '')}\033[0m", end="", flush=True)
+        elif kind == "tool_call":
+            tool_calls.append(event.get("name", ""))
+            if verbose:
+                print(f"\n\033[36m[工具调用] {event.get('name', '')} {event.get('query', '')}\033[0m", end="", flush=True)
+    if verbose:
+        print()
     return {"tool_calls": tool_calls, "answer": "".join(answer_parts)}
 
 
 async def main() -> None:
     setup_logging()
     verbose = "--verbose" in sys.argv
-    if not (AgentService()._get_agent(thinking=False, web_search=False)):
+    if not AgentService()._model_ready:
         print("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
         return
 
-    print(f"\n=== Agent 评测（{len(CASES)} 条用例，agentscope ConsoleRenderer 可视化）===")
+    print(f"\n=== Agent 评测（{len(CASES)} 条用例，LangGraph 事件流{'，实时渲染' if verbose else ''}）===")
     started = time.monotonic()
     results = []
     for case in CASES:

@@ -27,18 +27,19 @@
 ```
 backend/
 ├── .env                        # 环境变量（密钥、模型、数据库连接，不入库）
-├── requirements.txt            # 依赖清单（fastapi/agentscope/asyncpg/elasticsearch 生态）
+├── requirements.txt            # 依赖清单（fastapi/langgraph/langchain/asyncpg/elasticsearch 生态）
 ├── logs/                       # 运行日志与评测报告（backend.log / eval_*.json）
 ├── files/                      # 上传图片存储目录（/files 静态服务根）
 ├── scripts/
 │   ├── eval_rag.py             # RAG 检索评测：Hit@K / MRR / 平均分 + LLM 裁判位
-│   ├── eval_agent.py           # Agent 行为评测：工具决策断言 + ConsoleRenderer 可视化
+│   ├── eval_agent.py           # Agent 行为评测：工具决策断言 + 事件流实时渲染
 │   └── cleanup_files.py        # 孤儿附件文件清理（按"是否被消息引用"判断）
 └── app/
     ├── main.py                 # 应用入口：lifespan 装配（日志→追踪→建表→路由挂载）
     ├── config.py               # Settings（pydantic-settings，.env 驱动，全部配置项集中于此）
     ├── logging_config.py       # 日志初始化：控制台 INFO + 滚动文件 DEBUG 双 handler
-    ├── tracing.py              # OpenTelemetry 初始化（OTLP → AgentScope Studio / Jaeger）
+    ├── tracing.py              # OpenTelemetry 初始化（OTLP → Studio / Jaeger / Langfuse）
+    ├── tracing_callback.py     # LangChain 回调版轻量 OTel span（模型调用级，挂在 ChatDeepSeek 上）
     ├── db.py                   # SQLAlchemy async engine + SessionLocal + create_all 建表
     ├── models.py               # ORM 三张表：users / conversations / messages
     ├── schemas.py              # Pydantic 请求/响应模型（注册、登录、对话、消息）
@@ -47,9 +48,10 @@ backend/
     ├── captcha.py              # 图形验证码：Pillow 生成 + HMAC 签名 + 进程内存存储
     ├── conversations.py        # /api/conversations 路由：列表/创建/详情/重命名/删除 + 消息截断（编辑重发）
     ├── chat.py                 # /api/conversations/{id}/messages：SSE 流式对话（核心）
-    ├── agent.py                # AgentService：AgentScope Agent 组装（开关组合懒加载）+ 事件流适配（核心）
-    ├── agent_logging.py        # AgentLoggingMiddleware：Agent 执行段节点日志（模型/工具/耗时/token，挂载于 Agent）
-    ├── agent_tools.py          # 内置工具注册与权限边界：工具清单 + 权限上下文 + deny 规则
+    ├── agent.py                # AgentService：消息装配 + LangGraph 图调用 + SSE 事件循环（核心）
+    ├── graph.py                # LangGraph StateGraph：agent→权限门→tools 的 ReAct 循环 + interrupt（核心）
+    ├── permissions.py          # 自研权限引擎：ALLOW/DENY/ASK 裁决（模式矩阵/deny 规则/只读白名单）
+    ├── agent_tools.py          # 内置工具（Bash/文件/任务四件套，LangChain StructuredTool）+ 权限上下文组装
     ├── workspace_picker.py     # 会话工作区：系统原生目录选择框（osascript/zenity）+ 路径校验
     ├── rag.py                  # 医学文献混合检索：ES 稠密+BM25/RRF 融合 + 智谱 rerank（核心）
     ├── websearch.py            # 联网搜索：web_search 工具转交 GLM 内置联网检索执行（复用 zhipu_api_key）
@@ -66,7 +68,7 @@ backend/
 1. `setup_logging()`（logging_config.py）—— 初始化 `friday` 根 logger：控制台 INFO +
    `logs/backend.log` DEBUG（RotatingFileHandler 5MB×3）；
 2. `setup_tracing()`（tracing.py）—— `tracing_enabled=true` 时注册全局 OTLP TracerProvider；
-   未启用时 `TracingMiddleware` 自动短路，零开销；
+   未启用时不挂任何 LangChain 回调，零开销；
 3. `init_db()`（db.py）—— `Base.metadata.create_all` 建表（无迁移工具，见 §10）；
 4. 挂载路由：`auth_router` / `conversations_router` / `chat_router` / `files_router`
    （均带 `/api` 前缀），并将 `backend/files` 以 `/files` 静态目录对外提供；
@@ -100,7 +102,7 @@ backend/
 ### 4.1 全链路时序
 
 ```
-前端 ChatWorkspace          lib/api.ts streamMessage      chat.py chat()/generate()     agent.py stream()      AgentScope Agent
+前端 ChatWorkspace          lib/api.ts streamMessage      chat.py chat()/generate()     agent.py stream()      LangGraph 执行图
  │ POST /messages ─────────────▶ │                              │                          │                     │
  │                               │                      校验会话归属/内容非空                    │                     │
  │                               │                      用户消息落库 + 首条消息改写标题            │                     │
@@ -108,9 +110,9 @@ backend/
  │                               │                      节点[接收消息]                            │                     │
  │                               │                      返回 StreamingResponse(text/event-stream) │                     │
  │                               │                              │ async for event                 │                     │
- │                               │                              │  ◀── yield {"type":...} ────────┤ Agent.reply_stream  │
- │                               │                              │      （事件映射，见 4.4）        │  ReAct 循环：        │
- │  onEvent(event) ◀─────────────┤ 逐事件 SSE 下发（+0.05s/条）  │                                │  reasoning→acting   │
+ │                               │                              │  ◀── yield {"type":...} ────────┤ graph.astream      │
+ │                               │                              │      （custom 事件直译）         │  StateGraph 循环：  │
+ │  onEvent(event) ◀─────────────┤ 逐事件 SSE 下发（+0.05s/条）  │                                │  agent→gate→tools   │
  │   text/thinking → 打字机缓冲    │                              │                              │  工具调用→结果回填    │
  │   tool_call → 检索标签 chip     │                              │                              │  (medical_rag_search)│
  │   done/error → 收尾            │                              │ 全文+meta 落库（toolCalls/thinking）│                │
@@ -133,8 +135,8 @@ backend/
 | `done` | `message_id` | 流正常结束（assistant 消息已落库） | 解除 loading |
 | `error` | `content` | 服务端异常 | `message.error` 提示 |
 
-> 注意 `tool_call` 事件在 `TOOL_CALL_END` 时才下发：此时参数 JSON 才收全，
-> 能解析出检索词，多次并行多角度检索各自成 chip（agent.py `_tool_query()`）。
+> 注意 `tool_call` 事件在模型流结束（工具调用参数收全）时才下发：
+> 能解析出检索词，多次并行多角度检索各自成 chip（graph.py `_tool_query()`）。
 
 ### 4.3 chat.py 的关键实现点
 
@@ -154,35 +156,39 @@ backend/
 - **消息截断**（conversations.py `DELETE /{id}/messages/{mid}`）：删除指定消息及其后全部
   消息（`created_at >=` 目标），前端「编辑重发」先截断再重发；跨用户访问返回 404。
 
-### 4.4 agent.py 的关键实现点
+### 4.4 agent.py / graph.py 的关键实现点
 
-- **按开关组合装配**（`AgentService._get_agent()`）：以（深度思考, 联网搜索）组合为键懒加载并缓存
-  Agent（各自独立 Toolkit 与对话状态）。普通对话用 `openai_model`（deepseek-chat）；
-  「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-flash）时切换到
-  带 `thinking_enable=True` 的 reasoning Agent——思考过程以独立 `THINKING_BLOCK_DELTA`
-  事件流出，前端折叠展示；未配置 thinking 模型则退化为提示词引导；
-- **联网搜索工具**：「联网搜索」打开且配置了 `ZHIPU_API_KEY` 时，`web_search` FunctionTool
-  （app/websearch.py）随组合注册，系统提示词追加时效性检索指令；主模型 tool_call 触发后，
-  工具内部调用 GLM `chat/completions` + 内置 `web_search` 工具（`glm-4-flash` + `search_std`
-  引擎），把「GLM 检索摘要 + 原始网页结果（标题/链接/摘要/发布时间）」回填给主模型引用作答；
-  未配置密钥时降级为提示词引导（模型会说明无法联网）；
-- **多模态消息**（`_user_message()`）：图片附件读文件 → base64 → `DataBlock(Base64Source)`，
-  经 `OpenAIChatFormatter` 转成 OpenAI 兼容 `image_url`（AgentScope 自带的
-  `DeepSeekChatFormatter` 会跳过 DataBlock，故显式替换 formatter）；
+- **每轮重建无状态上下文**（`AgentService.stream()`）：以「system prompt（人设 +
+  长期记忆块 + 滚动摘要块）+ 回放窗口 + 本轮多模态消息」组装 LangChain 消息列表，
+  编译一张一次性 LangGraph 图（`build_graph()`，挂 `MemorySaver` 检查点——只服务
+  本轮权限确认的 interrupt 续跑，不跨轮持久）；普通对话用 `openai_model`
+  （deepseek-chat）；「深度思考」打开且配置了 `openai_thinking_model`
+  （deepseek-v4-flash）时切换 reasoning 模型（`thinking.type=enabled`）——
+  思考过程以 `reasoning_content` 增量流出（langchain-deepseek 提取），前端折叠展示；
+  未配置 thinking 模型则退化为提示词引导；
+- **执行图三节点**（graph.py）：`agent`（模型 `astream` 流式生成，text/thinking 增量
+  与 tool_call chip 经 `get_stream_writer()` 写成 custom 事件）→ `gate`（对每个工具调用
+  做 `permissions.decide()` 裁决，有 ASK 时 `interrupt()` 挂起）→ `tools`（放行调用并行
+  执行、被拒调用合成拒绝 ToolMessage 回填）——构成「推理 → 调工具 → 结果回填 → 继续推理」
+  的 ReAct 循环，后端只消费 custom 事件流；
+- **联网搜索工具**：「联网搜索」打开且配置了 `ZHIPU_API_KEY` 时，`web_search`
+  StructuredTool（app/websearch.py）随请求注册，系统提示词追加时效性检索指令；
+  主模型 tool_call 触发后，工具内部调用 GLM `chat/completions` + 内置 `web_search`
+  工具（`glm-4-flash` + `search_std` 引擎），把「GLM 检索摘要 + 原始网页结果
+  （标题/链接/摘要/发布时间）」回填给主模型引用作答；未配置密钥时降级为提示词引导
+  （模型会说明无法联网）；
+- **多模态消息**（`_user_message()`）：图片附件读文件 → base64 data URI →
+  LangChain content blocks（`{"type": "image_url", "image_url": {"url": "data:..."}}`）；
   附件名经 `files.py SAFE_NAME` 正则白名单校验，防路径穿越；
-- **AgentScope 事件 → SSE 事件映射**：
+- **custom 事件 → SSE 事件映射**（agent.py 消费，`usage` 类型只做回复级累计不透传）：
 
-| AgentScope EventType | 处理 | 产出的 SSE |
-| --- | --- | --- |
-| `TEXT_BLOCK_DELTA` | 直接透传 | `{"type": "text", "content": δ}` |
-| `THINKING_BLOCK_DELTA` | 直接透传 | `{"type": "thinking", "content": δ}` |
-| `TOOL_CALL_START` | 记录 call_id / name，日志 `节点[工具调用]` | —（等参数收全） |
-| `TOOL_CALL_DELTA` | 按 call_id 累积参数 JSON 片段 | — |
-| `TOOL_CALL_END` | 解析检索词，日志 `节点[工具参数]` | `{"type": "tool_call", "name", "query"}` |
-| `TOOL_RESULT_END` | 日志 `节点[工具结果]` | —（结果已在 Agent 内部回填上下文） |
+| custom 事件 | 产出的 SSE |
+| --- | --- |
+| `{"type": "text", "content": δ}` | 直接透传 |
+| `{"type": "thinking", "content": δ}` | 直接透传 |
+| `{"type": "tool_call", "name", "query"}` | 直接透传（chip） |
+| `{"type": "usage", ...}` | —（节点[Agent返回] 的 rounds/token 累计） |
 
-- **ReAct 循环**：Agent 内部自动完成「推理 → 调工具 → 结果回填 → 继续推理」，
-  后端只消费事件流，无需手写工具循环；
 - **演示模式降级**：未配置模型密钥时走本地模拟流（`_demo_answer()`），保证无 key 也能跑通交互。
 
 ### 4.5 前端消费契约（lib/api.ts）
@@ -223,8 +229,8 @@ backend/
 ### 5.1 检索链路（app/rag.py，Elasticsearch 混合检索）
 
 ```
-模型层    Agent（ReAct 循环）── 决定是否调用、生成检索词、消费检索结果
-             │  FunctionTool 包装（toolkit 注册，权限 ALLOW）
+模型层    LangGraph 执行图（agent→gate→tools 循环）── 决定是否调用、生成检索词、消费检索结果
+             │  StructuredTool 包装（恒放行：permissions.AUTO_ALLOW_TOOLS）
 工具层    medical_rag_search(query, top_k=3) → str
              │  容错：检索失败返回错误说明而非抛异常（不让工具炸掉 Agent 循环）
              │  空结果：明确提示"未找到文献"，要求模型声明后基于自身知识回答
@@ -255,10 +261,12 @@ backend/
    按 `results[].relevance_score` 降序取前 top_k（实测能把 RRF 第 8~10 名的正确文档
    精准提进前 3）；调用失败自动降级为 RRF 序并打告警日志，检索不中断；
 5. **过滤与阈值**：`rag_min_score` 现作用于 rerank 分数（0~1），默认 0.0 全保留；
-6. **工具 schema 即函数签名**：`FunctionTool` 从 `medical_rag_search` 的签名与 docstring
-   自动提取 JSON Schema 给模型；docstring 同时承担「何时该调用」的指令；
-7. **权限显式放行**：`PermissionDecision(behavior=ALLOW)`——AgentScope 权限引擎默认要求
-   人工确认工具执行，无头 SSE 场景必须显式允许，否则事件流停在 `REQUIRE_USER_CONFIRM`；
+6. **工具 schema 即函数签名**：`StructuredTool.from_function` 从 `medical_rag_search` 的
+   args_schema（pydantic 模型）与 docstring 自动提取 JSON Schema 给模型；docstring
+   同时承担「何时该调用」的指令；
+7. **权限显式放行**：`medical_rag_search` / `web_search` 在 `permissions.AUTO_ALLOW_TOOLS`
+   清单里恒放行——权限门对内置工具默认要求裁决/确认，无头 SSE 场景必须显式允许，
+   否则事件流停在 interrupt；
 8. **检索是 Agentic 的**：日志里的 query 是模型改写提炼的中文关键词，不是用户原话
    （关键词化可提高两路召回命中）；系统提示词（prompts.py）明确允许"必要时从多个角度
    多次调用"，因此一次用户提问常出现多条检索日志（如"病名+症状""病名+治疗"各查一次），
@@ -337,8 +345,8 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 | 层 | 实现 | 内容 |
 | --- | --- | --- |
-| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger；Agent 执行段由 agent_logging.py 的 `AgentLoggingMiddleware` 产出（挂载于 `Agent(middlewares=...)`），服务层/工具内部日志仍在各模块 | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / Agent返回（含轮次·整轮 token 合计·耗时） / 模型调用·返回（含每轮 token 用量·缓存命中） / 工具调用（含参数） / 工具结果（含状态·耗时） / RAG连接 / RAG向量化 / RAG检索开始 / RAG融合完成 / RAG重排（重排异常自动降级 RRF 序）/ RAG检索完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 记忆合并（含合并后全文）/ 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
-| 分布式追踪 | tracing.py + agent.py 的 `TracingMiddleware()` | OTLP（gRPC 4317 / HTTP 3000）导出，AgentScope Studio 可直接可视化 trace 树、token 用量、耗时；`tracing_enabled=false` 时零开销短路 |
+| 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger；Agent 执行段由 graph.py 的节点内嵌日志产出（原 AgentLoggingMiddleware 的职责并入执行图），服务层/工具内部日志仍在各模块 | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / Agent返回（含轮次·整轮 token 合计·耗时） / 模型调用·返回（含每轮 token 用量·缓存命中） / 工具调用（含参数） / 工具结果（含状态·耗时） / RAG连接 / RAG向量化 / RAG检索开始 / RAG融合完成 / RAG重排（重排异常自动降级 RRF 序）/ RAG检索完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 记忆合并（含合并后全文）/ 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
+| 分布式追踪 | tracing.py + tracing_callback.py（LangChain `BaseCallbackHandler`，挂在 ChatDeepSeek 上） | OTLP（gRPC 4317 / HTTP 3000）导出模型调用级基础 span（模型名/耗时/token），Studio / Jaeger / Langfuse 可视化；`tracing_enabled=false` 时零开销短路 |
 
 日志设计约定：**节点[名称]** 前缀统一格式，每条链路可凭 `conversation` / `call_id` 串起全轨迹。
 
@@ -349,16 +357,17 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 | 脚本 | 用途 | 备注 |
 | --- | --- | --- |
 | `scripts/eval_rag.py` | RAG 检索评测：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@K / MRR / 平均 Top 分 | LLM 裁判需 `EVAL_JUDGE_API_KEY`（留空自动跳过）；报告 `logs/eval_rag.json` |
-| `scripts/eval_agent.py` | Agent 行为评测：医学问题应触发工具 / 非医学不应触发；agentscope `ConsoleRenderer` 可视化运行轨迹 | 实测 3/3 通过；报告 `logs/eval_agent.json` |
+| `scripts/eval_agent.py` | Agent 行为评测：医学问题应触发工具 / 非医学不应触发；`--verbose` 实时渲染事件流轨迹 | 实测 3/3 通过；报告 `logs/eval_agent.json` |
 | `scripts/cleanup_files.py` | 孤儿附件清理（按引用判断，只预览可确认） | 见 ISSUES.md P1 附件管理 |
 
 ---
 
-## 十、内置工具与权限模型（app/agent_tools.py）
+## 十、内置工具与权限模型（app/agent_tools.py + app/permissions.py）
 
 「Agent 工具」开关（前端开关 × 服务端 `AGENT_TOOLS_ENABLED` 总开关，默认关）开启时，
-在 `medical_rag_search`/`web_search` 之外注册 AgentScope 内置工具：Bash、Read、Write、Edit、
-Glob、Grep、TaskCreate/Get/List/Update（PowerShell 仅 Windows 注册）。
+在 `medical_rag_search`/`web_search` 之外注册**自研复刻**的内置工具：Bash、Read、Write、
+Edit、Glob、Grep、TaskCreate/Get/List/Update（LangChain `StructuredTool`；工具名/参数
+schema/描述文本与原 AgentScope 内置工具一致，PowerShell 未迁移）。
 
 工作区有两种形态（`resolve_workspace`，存 `conversation_settings.workspace_root`）：
 
@@ -369,7 +378,8 @@ Glob、Grep、TaskCreate/Get/List/Update（PowerShell 仅 Windows 注册）。
 
 ### 10.1 权限模式：请求侧可切换，默认 DEFAULT，会话记住选择
 
-权限上下文经 `AgentState.permission_context` 注入，模式由 `ChatRequest.permission_mode` 指定，
+权限上下文随图构建注入（`build_graph(llm, tools, permission_context)`），模式由
+`ChatRequest.permission_mode` 指定，
 **生效优先级：会话设置（conversation_settings.permission_mode）> 请求参数 > default**（服务端权威）。
 前端仅工作区会话显示选择器（chip + Dropdown），改动即 `PUT /conversations/{id}/permission-mode`
 落库。工作区会话自动开启 Agent 工具（前端发送 `agent_tools = !!workspace_root`，无手动开关），
@@ -386,22 +396,26 @@ BYPASS（跳过全部安全检查）不开放。
 | `explore` | 只读模式，一切修改直接拒绝 |
 | `dont_ask` | 无交互场景：ASK 一律转 DENY（无人值守行为） |
 
-各模式共同的裁决基底：Read/Glob/Grep 只读放行；Task 四件套恒 ALLOW；Write/Edit 工作目录内
+各模式共同的裁决基底（`permissions.decide()`，判定顺序复刻原 AgentScope 引擎）：
+显式放行工具 → deny 规则 → 只读快路径 → 安全 ASK → 工作区写入放行 → allow 规则 → 模式兜底。
+Read/Glob/Grep 只读放行；Task 四件套恒 ALLOW；Write/Edit 工作目录内
 自动放行（仅 ACCEPT_EDITS/DONT_ASK，DEFAULT 下会 ASK）；Bash 只读白名单放行、文件变更命令
-仅限工作目录；deny 规则最高优先、危险命令等 bypass-immune 安全 ASK 无法被 allow 规则豁免。
+仅限工作目录；deny 规则最高优先、危险命令等安全 ASK 无法被 allow 规则豁免。
 
-### 10.2 确认链路（park & resume，app/confirm.py）
+### 10.2 确认链路（interrupt & resume，app/confirm.py）
 
-AgentScope 的 ASK 是 park-and-resume 模型：`reply_stream` 产出 `RequireUserConfirmEvent` 后
-本轮自然结束（parked 状态留在 Agent 实例的 state 里），不悬挂协程。本项目对接方式：
+权限 ASK 采用 LangGraph 的 interrupt-resume 模型：执行图的权限门节点产出 `interrupt()` 后
+图暂停（检查点留在请求内新建的 `MemorySaver` 里），不悬挂协程。本项目对接方式：
 
-1. agent.py 的事件循环收到该事件 → SSE 推 `permission_ask`（只含工具名与参数摘要，
-   工具调用权威副本不出服务端，前端只回布尔值——防伪造）；
-2. SSE 请求内 `await` ConfirmHub 的 asyncio.Event（进程内协调器），同一请求全程保活 parked Agent；
+1. agent.py 的 astream 循环收到 `__interrupt__` 更新 → SSE 推 `permission_ask`（只含工具名
+   与参数摘要，工具调用权威副本不出服务端，前端只回布尔值——防伪造）；
+2. SSE 请求内 `await` ConfirmHub 的 asyncio.Event（进程内协调器），同一请求全程保活；
 3. 前端卡片调 `POST /api/conversations/{id}/permissions/confirm` 应答 → 唤醒等待方 →
-   以 `UserConfirmResultEvent` 为输入对同一 Agent 再次 `reply_stream()` 续跑；
-4. 「总是允许」（always=true）：建议规则（suggested_rules）随确认事件喂给引擎（本 reply 内
-   立即生效），同时存入 ConfirmHub 的会话规则表，后续轮次新建 Agent 时重放进 permission_context；
+   以 `Command(resume={"approved", "always"})` 为输入对同一张图再次 `astream()` 续跑
+   （从检查点恢复，agent 节点不重跑，chip 不重复下发）；
+4. 「总是允许」（always=true）：建议规则（gate 的 interrupt payload 自带 suggestions，
+   如 Bash 的 `git commit:*` 前缀式、Write 的目录 `dir/**` glob 式）存入 ConfirmHub 的
+   会话规则表，后续轮次重建权限上下文时经 `apply_session_rules()` 重放；
 5. 无人应答超时（`PERMISSION_CONFIRM_TIMEOUT_SECONDS`，默认 120s）按拒绝续跑——模型收到
    denied 结果继续生成，流不会悬挂；SSE 断开（GeneratorExit）时清理登记。
 
@@ -417,7 +431,7 @@ deny 规则在权限引擎中先于只读放行与工具自身判定生效，清
   日志、依赖清单全部封禁，新增文件自动纳入保护；工作区是唯一豁免。
 
 Read/Write/Edit 按 `file_path` 匹配，Glob/Grep 按其 `path` 参数匹配（后者只在模型显式传 path 时
-拦得住，保护有限）。Bash 不配 deny 规则（其规则是命令子串匹配，易误伤），依赖框架内置的
+拦得住，保护有限）。Bash 不配 deny 规则（其规则是命令子串/前缀匹配，易误伤），依赖引擎内置的
 危险命令黑名单 + 工作目录限制 + DONT_ASK 转拒。
 
 本机开发逃生门：`AGENT_TOOLS_BASH_ALLOW_PREFIXES`（逗号分隔的命令子串，如 `open -a`）会生成
@@ -426,16 +440,16 @@ deny/安全检查之后判定，放不进危险命令；命令仍在后端所在
 
 ### 10.4 已知限制（非硬隔离）
 
-1. **框架把服务器进程 cwd 也当工作目录**（`ToolBase._path_in_allowed_working_path` 无条件并入
-   `os.getcwd()`）：Bash 对 cwd（backend/）内的文件命令可写——Write/Edit 路径已被 deny 封住，
-   但 Bash 侧无法用路径规则表达同等封禁，属已知残留；
+1. **（LangGraph 迁移已修复）** 原框架把服务器进程 cwd 也当工作目录，Bash 对 cwd（backend/）
+   内的文件命令可写；自研权限引擎的工作目录只认会话工作区，该残留不再存在；
 2. Bash 只读白名单命令可读宿主上未被 deny 命中的普通文件（如 /etc/hosts）；
-3. 任务列表存在 `AgentState.tasks_context`，Agent 每轮重建 → **仅单次回复内有效**（单次回复的
-   多步规划够用）；跨轮持久化需把 tasks_context 序列化进 conversation，留作后续；
-4. 硬隔离升级路径：把工具的 `backend` 换成 `DockerWorkspace` 等沙箱后端（AgentScope 原生支持），
-   本次未做。
+3. 任务列表存在每请求独立的 `TaskStore`（闭包注入）→ **仅单次回复内有效**（单次回复的
+   多步规划够用）；跨轮持久化需序列化进 conversation，留作后续；
+4. 硬隔离升级路径：Bash 改在 Docker 容器内执行（自研实现下需自行接入沙箱），本次未做。
 
-边界行为由 `tests/test_agent_tools.py` 锁定（deny 覆盖面 + 引擎裁决 + chip 摘要取值）。
+边界行为由 `tests/test_agent_tools.py` 锁定（deny 覆盖面 + 引擎裁决矩阵 + 工具执行 + chip
+摘要取值），`tests/test_graph.py` 锁定执行图行为（流式事件 / interrupt-resume / 拒绝回填 /
+节点日志）。
 
 ---
 
@@ -443,11 +457,11 @@ deny/安全检查之后判定，放不进危险命令；命令仍在后端所在
 
 | # | 事实 | 影响 | 计划 |
 | --- | --- | --- | --- |
-| 1 | `agent_service = AgentService()` 进程级单例，Agent 自带对话状态；`stream()` 只取 `messages[-1]`，传入的 `history` 是死参数 | 跨会话/跨用户记忆串味（已两次实证）、重启失忆、无法多副本 | 无状态化：每轮显式回放库中历史 + token 预算（ISSUES.md §1.1，第一优先级） |
+| 1 | ~~Agent 进程级单例自带状态~~ 已无状态化：每轮从库重建上下文（LangGraph 图 + MemorySaver 均为请求内一次性对象） | 跨会话串味/重启失忆已消除 | — |
 | 2 | chat.py 每事件 `asyncio.sleep(0.05)` 人为限速 | 长回答整体被拖慢 | 移除，仅保留前端打字机节奏 |
 | 3 | RAG 语料向量与查询模型（embedding-3）是否同源存疑（历史失配） | 稠密路区分度受损；已由 BM25 稀疏路 + rerank 兜底补足（混合检索下评测 Hit@4=1.0） | 根治：用 embedding-3 重建语料向量（评测脚本可量化验证） |
 | 4 | 验证码存进程内存、附件存本地磁盘、`create_all` 建表 | 多副本部署阻塞 | Redis / 对象存储 / Alembic |
-| 5 | 无测试、无 CI | 重构风险高 | 先补鉴权/会话/SSE 三条主链路测试（ISSUES.md 第一批） |
+| 5 | 单测覆盖纯函数与执行图（7 个测试文件，104 用例），SSE 端到端无自动化测试 | 前后端契约回归风险 | 补 SSE 链路集成测试与 CI |
 
 ---
 

@@ -1,6 +1,6 @@
 # Friday Agent
 
-一个叫 Friday 的 AI Agent 应用：FastAPI + AgentScope 后端，Next.js + Ant Design 前端。
+一个叫 Friday 的 AI Agent 应用：FastAPI + LangGraph/LangChain 后端，Next.js + Ant Design 前端。
 支持流式对话、深度思考、医学文献 RAG 检索、联网搜索、多模态图片输入、两级记忆（会话级上下文管理 + 用户级长期记忆）与深色主题。
 
 ---
@@ -28,7 +28,7 @@
 **后端**
 
 - FastAPI 0.115 + Uvicorn
-- AgentScope 2.0.8（Agent / Toolkit / 事件流）
+- LangGraph 1.2 + LangChain 1.4（StateGraph ReAct 循环 / interrupt 权限确认 / langchain-deepseek 模型接入 / StructuredTool 工具）
 - SQLAlchemy 2.0 async + asyncpg + PostgreSQL 16
 - Elasticsearch 9.x（医学文献混合检索：稠密 + BM25/IK 稀疏 + RRF 融合 + rerank 精排）+ 智谱 `embedding-3` / `rerank`
 - Pydantic Settings、PyJWT、pwdlib[argon2]、Pillow、httpx
@@ -280,15 +280,14 @@ npm run dev
 
 ---
 
-## 可观测（AgentScope Studio）
+## 可观测（OTLP 后端）
 
-后端通过 **OpenTelemetry** 上报 Agent 运行数据，可接入 [AgentScope Studio](https://github.com/agentscope-ai/agentscope-studio)
-查看 trace 树、token 用量、耗时与完整调用属性。
+后端通过 **OpenTelemetry** 上报 Agent 运行数据，可接入 [AgentScope Studio](https://github.com/agentscope-ai/agentscope-studio)、Jaeger、Langfuse 等任意 OTLP 后端查看 trace 树、token 用量与耗时。
 
-> 实现说明：AgentScope 1.x 用 `agentscope.init(studio_url=...)` 上报，而本项目使用的
-> **2.0.8 已移除该 API**，改为纯 OpenTelemetry 方案 —— 配好全局 `TracerProvider` 后，
-> 挂在 Agent 上的 `TracingMiddleware` 会自动产出符合 OpenTelemetry GenAI 语义约定的 span。
-> Studio 对外暴露的正是标准 OTLP 端点，因此两者可以直接对接。
+> 实现说明：LangGraph 迁移前由 AgentScope 的 `TracingMiddleware` 产出 GenAI span；
+> 现由自研的 `app/tracing_callback.py`（LangChain `BaseCallbackHandler`）产出**基础版**
+> 模型调用级 span（模型名 / 耗时 / token 用量），挂在 ChatDeepSeek 的 callbacks 上。
+> Studio 对外暴露的正是标准 OTLP 端点，因此可以直接对接。
 
 ### 使用
 
@@ -302,18 +301,8 @@ cd backend
 TRACING_ENABLED=true .venv/bin/python -m uvicorn app.main:app --reload --port 8000
 ```
 
-打开 <http://localhost:3001> → **Traces** 页面即可看到每次对话的调用链：
-
-```
-invoke_agent Friday
-├── chat deepseek-chat                # 第一次模型调用（决定是否检索）
-├── execute_tool medical_rag_search
-├── execute_tool medical_rag_search   # 多角度并行检索
-└── chat deepseek-chat                # 带检索结果的第二次模型调用
-```
-
-每条 trace 记录 token 用量（input / output / total）、耗时、模型名、会话 id，
-以及符合 [GenAI 语义约定](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/)的完整属性。
+打开 <http://localhost:3001> → **Traces** 页面即可看到每次对话的模型调用链
+（含 token 用量 input / output、耗时、模型名、会话 id）。
 
 ### 接入第三方后端
 
@@ -372,7 +361,8 @@ npx tsc --noEmit   # 类型检查
 
 ## 已知限制
 
-- **默认模型已标记 sunset**：`deepseek-chat` / `deepseek-reasoner` 在 AgentScope 模型卡中为 `status: sunset`，当前可用的推理模型是 `deepseek-v4-flash` / `deepseek-v4-pro`。建议把 `OPENAI_MODEL` 一并迁到 v4 系列。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
+- **默认模型已标记 sunset**：`deepseek-chat` / `deepseek-reasoner` 在 DeepSeek 模型卡中为 `status: sunset`，当前可用的推理模型是 `deepseek-v4-flash` / `deepseek-v4-pro`。建议把 `OPENAI_MODEL` 一并迁到 v4 系列。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
+- **内置工具为自研简化版**：LangGraph 迁移时自研复刻（shlex 替代 tree-sitter 命令解析、Read 不支持 PDF 分页、PowerShell 未迁移）；工具名/参数 schema 与权限语义（deny 规则 / 工作区 / 模式矩阵）与原 AgentScope 版一致。
 - **`/files` 静态目录无鉴权**：依靠 32 位随机 UUID 文件名不可枚举来保护。正式产品建议改为带鉴权的下载接口或签名 URL。
 - **点赞状态仅保存在前端**：刷新后重置，未落库。
 - **历史图片不重复送模型**：多轮追问时，模型只能看到当前这一轮附带的图片（历史轮次回放为 `[图片]` 占位文本）。

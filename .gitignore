@@ -29,6 +29,9 @@ backend/logs/
 # 用户上传的图片（属于运行数据，不入库）
 backend/files/
 
+# Agent 内置工具的会话工作区（运行时生成，不入库）
+backend/workspaces/
+
 # 数据库文件
 *.db
 *.sqlite3

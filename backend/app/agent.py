@@ -1,28 +1,25 @@
 from collections.abc import AsyncIterator
 import asyncio
 import base64
-import json
 import logging
+import time
 from uuid import UUID
 
-from agentscope.agent import Agent
-from agentscope.credential import DeepSeekCredential
-from agentscope.event import ConfirmResult, EventType, RequireUserConfirmEvent, UserConfirmResultEvent
-from agentscope.formatter import OpenAIChatFormatter
-from agentscope.message import AssistantMsg, Base64Source, DataBlock, Msg, TextBlock, UserMsg
-from agentscope.middleware import TracingMiddleware
-from agentscope.model import DeepSeekChatModel
-from agentscope.permission import PermissionBehavior, PermissionDecision, PermissionMode
-from agentscope.state import AgentState
-from agentscope.tool import FunctionTool, ToolBase, Toolkit
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.tools import StructuredTool
+from langchain_deepseek import ChatDeepSeek
+from langgraph.types import Command
+from pydantic import BaseModel, Field
 
-from .agent_logging import AgentLoggingMiddleware
 from .agent_tools import apply_session_rules, build_builtin_tools, resolve_workspace
 from .config import settings
 from .confirm import AskAnswer, PendingAsk, confirm_hub
 from .files import resolve_stored_image
+from .graph import build_graph
+from .permissions import PermissionMode, SessionRule
 from .prompts import AGENT_TOOLS_PROMPT, AGENT_TOOLS_PROMPT_HOST, SYSTEM_PROMPT, WEB_SEARCH_PROMPT
 from .rag import medical_rag_search
+from .tracing_callback import make_tracing_callbacks
 # 别名避免与 _build/stream 的 web_search 布尔参数互相遮蔽
 from .websearch import web_search as _web_search_tool
 from .websearch import web_search_available
@@ -39,63 +36,43 @@ _PERMISSION_MODES: dict[str, PermissionMode] = {
 }
 
 
-def _user_message(content: str, attachments: list[str] | None) -> UserMsg:
-    """有图片附件时构造多模态消息：图片读成 base64 直接传给模型。
+class _MedicalRagArgs(BaseModel):
+    query: str
+    top_k: int = 3
+
+
+class _WebSearchArgs(BaseModel):
+    query: str
+    count: int = 5
+
+
+def _user_message(content: str, attachments: list[str] | None) -> HumanMessage:
+    """有图片附件时构造多模态消息：图片读成 base64 data URI 直接传给模型。
 
     DeepSeek 的 OpenAI 兼容接口接受 image_url 形式的 data URI，
-    AgentScope 侧由 OpenAIChatFormatter 负责把 DataBlock 转成该格式。
+    LangChain 侧由 content blocks 原生承载该格式。
     """
-    blocks: list[TextBlock | DataBlock] = []
+    blocks: list[dict] = []
     for name in attachments or []:
         resolved = resolve_stored_image(name)
         if not resolved:
             logger.warning("节点[附件跳过] 附件不存在或名称非法 name=%r", name)
             continue
         path, media_type = resolved
-        blocks.append(
-            DataBlock(
-                type="data",
-                source=Base64Source(
-                    type="base64",
-                    data=base64.b64encode(path.read_bytes()).decode(),
-                    media_type=media_type,
-                ),
-                name=path.name,
-            )
-        )
+        data = base64.b64encode(path.read_bytes()).decode()
+        blocks.append({"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}})
     if not blocks:
-        return UserMsg(name="user", content=content)
+        return HumanMessage(content=content)
     # 只发图不打字时给模型一个默认指令
-    blocks.insert(0, TextBlock(type="text", text=content or "请描述这张图片。"))
+    blocks.insert(0, {"type": "text", "text": content or "请描述这张图片。"})
     logger.info("节点[多模态消息] images=%s text=%r", len(blocks) - 1, (content or "")[:60])
-    return UserMsg(name="user", content=blocks)
+    return HumanMessage(content=blocks)
 
 
-# chip 摘要的参数键优先级：检索词 → 命令 → 文件路径 → 搜索模式 → 目录 → 任务标题
-_TOOL_QUERY_KEYS = ("query", "command", "file_path", "pattern", "path", "subject")
-
-
-def _tool_query(raw_args: str) -> str:
-    """从工具调用参数 JSON 里取出展示摘要（检索词/命令/文件路径等），供前端 chip。"""
-    try:
-        payload = json.loads(raw_args) if raw_args else {}
-    except ValueError:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    for key in _TOOL_QUERY_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:40]
-    return ""
-
-
-def _replay_msgs(replay: list[dict[str, str]]) -> list[Msg]:
-    """把库中的回放窗口转成 AgentScope 消息：仅 user/assistant 纯文本（已由 context.py 清洗）。"""
+def _replay_msgs(replay: list[dict[str, str]]) -> list[BaseMessage]:
+    """把库中的回放窗口转成 LangChain 消息：仅 user/assistant 纯文本（已由 context.py 清洗）。"""
     return [
-        UserMsg(name="user", content=item["content"])
-        if item["role"] == "user"
-        else AssistantMsg(name="Friday", content=item["content"])
+        HumanMessage(content=item["content"]) if item["role"] == "user" else AIMessage(content=item["content"])
         for item in replay
     ]
 
@@ -103,81 +80,37 @@ def _replay_msgs(replay: list[dict[str, str]]) -> list[Msg]:
 class AgentService:
     """无状态的对话服务：跨请求不持有任何 Agent 上下文（记忆的唯一事实来源是数据库）。
 
-    每轮请求用「滚动摘要 + 回放窗口」重建一次性 Agent：
-    摘要注入 AgentState.summary（框架自动前置到模型上下文），历史经 observe 回放，
-    本轮消息（含图片附件）作为 reply_stream 的输入。进程级共享实例带来的
-    跨会话串味、重启失忆、并发中止连锁、开关切换丢上下文随之消失。
+    每轮请求用「滚动摘要 + 回放窗口」重建一次性 LangGraph 执行图：
+    摘要并入 system prompt，历史作为消息列表直接传入，本轮消息（含图片附件）
+    作为最后一条 HumanMessage。图内的 MemorySaver 检查点只服务本轮权限确认的
+    interrupt 续跑，不跨轮持久。进程级共享实例带来的跨会话串味、重启失忆、
+    并发中止连锁、开关切换丢上下文随之消失。
     """
 
     def __init__(self) -> None:
-        self._credential: DeepSeekCredential | None = None
-        if settings.model_provider == "deepseek" and settings.openai_api_key:
-            self._credential = DeepSeekCredential(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
-            )
+        self._model_ready = settings.model_provider == "deepseek" and bool(settings.openai_api_key)
 
     @staticmethod
-    def _build(
-        credential: DeepSeekCredential,
-        model: str,
-        state: AgentState,
-        thinking: bool = False,
-        web_search: bool = False,
-        memory_block: str | None = None,
-        builtin_tools: list[ToolBase] | None = None,
-        agent_tools_prompt: str = "",
-    ) -> Agent:
-        # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写
+    def _build_tools(web_search: bool) -> list[StructuredTool]:
+        # 只读检索工具恒放行（permissions.AUTO_ALLOW_TOOLS），避免权限门挂起等待人工确认
         tools = [
-            FunctionTool(
-                medical_rag_search,
+            StructuredTool.from_function(
+                coroutine=medical_rag_search,
                 name="medical_rag_search",
-                # 只读检索，允许模型自主执行，避免权限引擎挂起等待人工确认
-                permission=PermissionDecision(
-                    behavior=PermissionBehavior.ALLOW,
-                    message="只读文献检索，自动允许",
-                ),
+                description=medical_rag_search.__doc__ or "medical_rag_search",
+                args_schema=_MedicalRagArgs,
             ),
         ]
         if web_search:
             tools.append(
-                FunctionTool(
-                    _web_search_tool,
+                StructuredTool.from_function(
+                    coroutine=_web_search_tool,
                     name="web_search",
-                    permission=PermissionDecision(
-                        behavior=PermissionBehavior.ALLOW,
-                        message="只读联网检索，自动允许",
-                    ),
-                ),
+                    description=_web_search_tool.__doc__ or "web_search",
+                    args_schema=_WebSearchArgs,
+                )
             )
-        # 内置工具（Bash/文件/任务）：与 FunctionTool 混排注册，权限由 AgentState 的
-        # DONT_ASK 上下文裁决（工作区内写入放行、敏感路径 deny、其余拒绝）
-        if builtin_tools:
-            tools.extend(builtin_tools)
-        return Agent(
-            name="Friday",
-            # 长期记忆块（用户画像/事实条目，自带标注头）插在人设指令之后；
-            # 其标注已声明"与最近对话冲突时以最近对话为准"，与会话上下文指令衔接
-            system_prompt=SYSTEM_PROMPT
-            + (f"\n\n{memory_block}" if memory_block else "")
-            + (f"\n\n{WEB_SEARCH_PROMPT}" if web_search else "")
-            + (f"\n\n{agent_tools_prompt}" if agent_tools_prompt else ""),
-            # Tracing 未配置时自动短路；日志中间件产出执行段节点日志（模型/工具/耗时/token）
-            middlewares=[TracingMiddleware(), AgentLoggingMiddleware()],
-            # 每轮一次性状态：session_id 绑定会话，summary 承载滚动摘要
-            state=state,
-            model=DeepSeekChatModel(
-                credential=credential,
-                model=model,
-                parameters=DeepSeekChatModel.Parameters(thinking_enable=True) if thinking else None,
-                stream=True,
-                # DeepSeekChatFormatter 会跳过 DataBlock（图片），换成 OpenAI 兼容 formatter；
-                # DeepSeek 接口本身兼容，纯文本/工具调用路径实测同样正常。
-                formatter=OpenAIChatFormatter(),
-            ),
-            toolkit=Toolkit(tools=tools),
-        )
+        return tools
 
     async def stream(
         self,
@@ -199,14 +132,11 @@ class AgentService:
         use_search = web_search and web_search_available()
         # 内置工具受服务端总开关约束（安全边界见 agent_tools.py 模块说明）
         use_agent_tools = agent_tools and settings.agent_tools_enabled
-        builtin_tools = None
-        agent_tools_prompt = ""
-        if self._credential is not None:
+        if self._model_ready:
             model = settings.openai_thinking_model if use_thinking else settings.openai_model
-            state_kwargs: dict[str, object] = {
-                "session_id": str(conversation_id),
-                "summary": f"【本会话此前对话的滚动摘要（要点记录，细节以最近消息为准）】\n{summary}" if summary else "",
-            }
+            tools = self._build_tools(use_search)
+            permission_context = None
+            agent_tools_prompt = ""
             if use_agent_tools:
                 # 会话自选目录优先（用户本机目录，落库时已校验存在）；默认会话隔离目录需创建
                 workspace = resolve_workspace(conversation_id, workspace_root)
@@ -216,7 +146,7 @@ class AgentService:
                 builtin_tools, permission_context = build_builtin_tools(workspace, mode)
                 # 会话级「总是允许」规则重放（前端确认时勾选 always 落进来的）
                 apply_session_rules(permission_context, confirm_hub.session_rules(conversation_id))
-                state_kwargs["permission_context"] = permission_context
+                tools.extend(builtin_tools)
                 # 自选目录没有工作区下载链路，用 HOST 版提示词（告知本地路径）
                 template = AGENT_TOOLS_PROMPT_HOST if workspace_root else AGENT_TOOLS_PROMPT
                 agent_tools_prompt = template.format(
@@ -224,13 +154,26 @@ class AgentService:
                     # 产出文件下载走鉴权路由（前端会拦截该前缀链接做带 token 下载）
                     public_prefix=f"/api/workspaces/{conversation_id}",
                 )
-            # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
-            state = AgentState(**state_kwargs)  # type: ignore[arg-type]
-            agent = self._build(
-                self._credential, model, state,
-                thinking=use_thinking, web_search=use_search, memory_block=memory_block,
-                builtin_tools=builtin_tools, agent_tools_prompt=agent_tools_prompt,
+            # 滚动摘要并入 system prompt（原 AgentState.summary 的注入位，头文本保持一致）
+            system_prompt = SYSTEM_PROMPT
+            if summary:
+                system_prompt += f"\n\n【本会话此前对话的滚动摘要（要点记录，细节以最近消息为准）】\n{summary}"
+            if memory_block:
+                system_prompt += f"\n\n{memory_block}"
+            if use_search:
+                system_prompt += f"\n\n{WEB_SEARCH_PROMPT}"
+            if agent_tools_prompt:
+                system_prompt += f"\n\n{agent_tools_prompt}"
+            llm = ChatDeepSeek(
+                model=model,
+                api_key=settings.openai_api_key,
+                api_base=settings.openai_base_url,
+                stream_usage=True,
+                # thinking 开关映射 DeepSeek 的 thinking.type（enabled/disabled）
+                extra_body={"thinking": {"type": "enabled" if use_thinking else "disabled"}},
+                callbacks=make_tracing_callbacks(),
             )
+            graph = build_graph(llm, tools, permission_context)
             user_content = content
             # 有 reasoning 模型时由模型真正产出思考过程；没有才退化成提示词引导
             if deep_thinking and not use_thinking:
@@ -242,61 +185,47 @@ class AgentService:
                 conversation_id, len(replay), bool(summary), model, deep_thinking, web_search, use_agent_tools,
                 permission_mode if use_agent_tools else "-", user_content[:100],
             )
-            # 历史先回放（纯文本），本轮消息（含图片）再作为输入：附件预算只留给本轮
-            if replay:
-                await agent.observe(_replay_msgs(replay))
-            tool_args: dict[str, str] = {}
-            tool_names: dict[str, str] = {}
-            # 已下发过 chip 的工具调用（确认续跑后不重复发）
-            announced: set[str] = set()
-            inputs: object = _user_message(user_content, attachments)
+            config = {
+                "configurable": {"thread_id": str(conversation_id)},
+                "recursion_limit": 80,
+            }
+            messages = [SystemMessage(content=system_prompt), *_replay_msgs(replay), _user_message(user_content, attachments)]
+            inputs: object = {"messages": messages}
+            totals = {"input_tokens": 0, "output_tokens": 0, "rounds": 0}
+            started = time.perf_counter()
             while True:
-                parked: RequireUserConfirmEvent | None = None
-                async for event in agent.reply_stream(inputs):
-                    if event.type == EventType.REQUIRE_USER_CONFIRM:
-                        # 权限 ASK：本轮 reply 到此自然结束（parked 状态留在 agent.state），
-                        # 推给前端确认后以 UserConfirmResultEvent 续跑同一个 Agent
-                        parked = event
-                        continue
-                    if event.type == EventType.TEXT_BLOCK_DELTA:
-                        yield {"type": "text", "content": event.delta}
-                    elif event.type == EventType.THINKING_BLOCK_DELTA:
-                        yield {"type": "thinking", "content": event.delta}
-                    elif event.type == EventType.TOOL_CALL_START:
-                        tool_args[event.tool_call_id] = ""
-                        tool_names[event.tool_call_id] = event.tool_call_name
-                    elif event.type == EventType.TOOL_CALL_DELTA:
-                        tool_args[event.tool_call_id] = tool_args.get(event.tool_call_id, "") + event.delta
-                    elif event.type == EventType.TOOL_CALL_END:
-                        if event.tool_call_id in announced:
+                pending_payload: dict | None = None
+                async for mode_key, chunk in graph.astream(inputs, config, stream_mode=["custom", "updates"]):
+                    if mode_key == "custom":
+                        event = chunk
+                        if not isinstance(event, dict):
                             continue
-                        announced.add(event.tool_call_id)
-                        raw_args = tool_args.get(event.tool_call_id, "")
-                        # 参数到 END 才收全：把工具名和检索词一起下发，前端 chip 显示检索词，
-                        # 多次并行检索（多角度）就不会看起来像重复的同一个 chip。
-                        yield {
-                            "type": "tool_call",
-                            "name": tool_names.get(event.tool_call_id, ""),
-                            "query": _tool_query(raw_args),
-                        }
-                if parked is None:
+                        # usage 事件只做回复级累计，不进 SSE
+                        if event.get("type") == "usage":
+                            totals["input_tokens"] += int(event.get("input_tokens") or 0)
+                            totals["output_tokens"] += int(event.get("output_tokens") or 0)
+                            totals["rounds"] += 1
+                            continue
+                        yield event
+                    elif mode_key == "updates":
+                        interrupted = chunk.get("__interrupt__") if isinstance(chunk, dict) else None
+                        if interrupted:
+                            pending_payload = interrupted[0].value
+                if not isinstance(pending_payload, dict):
                     break
                 # ---- 权限确认：推给前端 → 等确认接口应答（超时自动拒绝）→ 续跑 ----
                 pending = PendingAsk(
                     conversation_id=conversation_id,
                     user_id=user_id or UUID(int=0),
-                    reply_id=parked.reply_id,
-                    calls=[
-                        {"id": call.id, "name": call.name, "query": _tool_query(call.input)}
-                        for call in parked.tool_calls
-                    ],
+                    reply_id=pending_payload["reply_id"],
+                    calls=pending_payload.get("calls", []),
                 )
                 confirm_hub.register(pending)
                 logger.info(
                     "节点[权限确认] conversation=%s reply=%s calls=%s",
-                    conversation_id, parked.reply_id, [c["name"] for c in pending.calls],
+                    conversation_id, pending_payload["reply_id"], [c.get("name") for c in pending.calls],
                 )
-                yield {"type": "permission_ask", "reply_id": parked.reply_id, "calls": pending.calls}
+                yield {"type": "permission_ask", "reply_id": pending_payload["reply_id"], "calls": pending.calls}
                 timed_out = False
                 try:
                     await asyncio.wait_for(
@@ -309,22 +238,20 @@ class AgentService:
                 answer = pending.answer or AskAnswer(approved=False)
                 yield {"type": "permission_resolved", "approved": answer.approved, "timed_out": timed_out}
                 # 「总是允许」：把建议规则存为会话级规则（后续轮次自动重放），
-                # 并随确认事件喂给引擎（本 reply 内立即生效）
-                rules = None
+                # 并随 resume 答复喂回 gate（本回复内立即生效由 approve 达成）
                 if answer.approved and answer.always:
-                    suggested = [rule for call in parked.tool_calls for rule in (call.suggested_rules or [])]
+                    suggested = [
+                        SessionRule(item["tool_name"], item["rule_content"])
+                        for item in pending_payload.get("suggestions", [])
+                    ]
                     if suggested:
                         confirm_hub.add_session_rules(conversation_id, suggested)
-                        rules = suggested
-                inputs = UserConfirmResultEvent(
-                    reply_id=parked.reply_id,
-                    confirm_results=[
-                        ConfirmResult(confirmed=answer.approved, tool_call=call, rules=rules)
-                        for call in parked.tool_calls
-                    ],
-                )
-            # 执行段节点日志（模型调用/工具调用·参数·结果/耗时/token）由
-            # AgentLoggingMiddleware 在中间件钩子里记，此处只做事件 → SSE 翻译
+                inputs = Command(resume={"approved": answer.approved, "always": answer.always})
+            logger.info(
+                "节点[Agent返回] 模型流结束 rounds=%s input_tokens=%s output_tokens=%s 耗时=%.2fs session=%s",
+                totals["rounds"], totals["input_tokens"], totals["output_tokens"],
+                time.perf_counter() - started, conversation_id,
+            )
             return
 
         logger.warning("节点[演示模式] 未配置模型密钥，返回本地演示流式回复 prompt=%r", content[:100])
@@ -346,7 +273,7 @@ class AgentService:
             "建议先明确目标、输入和验收标准，再按最小闭环实现。"
             "如果这是工程问题，可以从数据结构、错误处理、性能边界和测试用例四个方面逐项确认。\n\n"
             "当前服务未配置外部模型密钥，因此这里返回的是本地演示流式回复。"
-            "配置 OPENAI_API_KEY 并将 MODEL_PROVIDER 设置为 deepseek 后，会通过 AgentScope 2.0.8 调用 DeepSeek。"
+            "配置 OPENAI_API_KEY 并将 MODEL_PROVIDER 设置为 deepseek 后，会通过 LangGraph 调用 DeepSeek。"
         )
 
 

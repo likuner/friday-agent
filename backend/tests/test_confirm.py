@@ -3,9 +3,8 @@
 import asyncio
 from uuid import uuid4
 
-from agentscope.permission import PermissionBehavior, PermissionRule
-
 from app.confirm import AskAnswer, ConfirmHub, PendingAsk
+from app.permissions import SessionRule
 
 
 def _pending(conversation_id, user_id):
@@ -65,10 +64,7 @@ class TestSettle:
 
 class TestSessionRules:
     def _rule(self, content):
-        return PermissionRule(
-            tool_name="Bash", rule_content=content,
-            behavior=PermissionBehavior.ALLOW, source="session",
-        )
+        return SessionRule(tool_name="Bash", rule_content=content, source="session")
 
     def test_add_and_dedupe(self):
         hub = ConfirmHub()

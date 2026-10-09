@@ -9,12 +9,15 @@ pwdlib[argon2]==0.2.1
 python-multipart==0.0.20
 Pillow==11.1.0
 httpx==0.28.1
-agentscope==2.0.8
-# 可观测：AgentScope 的 TracingMiddleware 依赖 OpenTelemetry，显式声明避免仅靠传递依赖
+# Agent 编排：LangGraph 状态图（ReAct 循环 + interrupt 权限确认）+ LangChain 模型/工具抽象
+langgraph==1.2.14
+langchain==1.4.3
+langchain-core==1.6.9
+langchain-openai==1.7.0
+# 可观测：tracing_callback 的 OTel span 导出（显式声明避免仅靠传递依赖）
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp==1.44.0
 opentelemetry-semantic-conventions==0.65b0
-mcp==1.30.0
-openai==1.59.9
+openai==3.26.1
 # RAG 混合检索：本地 Elasticsearch 9.x（knn 稠密 + BM25/IK 稀疏 + RRF 融合）
 elasticsearch[async]==9.1.0
