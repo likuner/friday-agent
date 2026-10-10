@@ -131,20 +131,37 @@ section "启动后端 (uvicorn :$BACKEND_PORT)"
 cd "$ROOT/backend"
 
 if [ ! -d .venv ]; then
-  info "创建虚拟环境并安装依赖（首次较慢）"
+  info "创建虚拟环境（首次较慢）"
   python3 -m venv .venv
   .venv/bin/python -m pip install --upgrade pip
-  .venv/bin/python -m pip install -r requirements.txt
-fi
-if [ ! -x .venv/bin/uvicorn ]; then
-  info ".venv 存在但依赖不全，补装 requirements.txt"
-  .venv/bin/python -m pip install -r requirements.txt
 fi
 [ -f .env ] || { cp .env.example .env; warn "已从 .env.example 生成 backend/.env，请按需修改"; }
 
 if port_listening "$BACKEND_PORT"; then
   warn "端口 $BACKEND_PORT 已被占用，假定后端已在运行，跳过启动"
 else
+  # 依赖同步：requirements.txt 内容随分支变化（main=agentscope+openai 1.x，
+  # feature/langgraph=langgraph+openai 3.x），以文件哈希为戳记幂等安装，
+  # 切分支后重跑 ./start.sh 即可自动对齐 venv（pip 自动升降级冲突包）。
+  # 戳记放在 .venv 内，venv 重建后自动失效。
+  REQ_STAMP=".venv/.req.stamp"
+  REQ_HASH="$(shasum requirements.txt | cut -d' ' -f1)"
+  if [ "$(cat "$REQ_STAMP" 2>/dev/null || true)" != "$REQ_HASH" ]; then
+    info "同步依赖 requirements.txt（首次或切分支后较慢）"
+    if ! .venv/bin/python -m pip install -q -r requirements.txt; then
+      fail "依赖安装失败，请检查网络/镜像源后重试，或手动执行：cd backend && .venv/bin/python -m pip install -r requirements.txt"
+    fi
+    echo "$REQ_HASH" > "$REQ_STAMP"
+  else
+    info "依赖已同步（requirements.txt 未变化，跳过安装）"
+  fi
+
+  # 导入预检：依赖或代码问题在此即刻暴露，不必等到健康检查超时
+  if ! .venv/bin/python -c "import app.main" 2> "$RUN_DIR/import_check.err"; then
+    tail -n 25 "$RUN_DIR/import_check.err"
+    fail "后端导入失败（依赖未装齐或代码报错），完整输出见 $RUN_DIR/import_check.err"
+  fi
+
   nohup .venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port "$BACKEND_PORT" \
     > "$RUN_DIR/backend.log" 2>&1 &
   echo $! > "$RUN_DIR/backend.pid"
@@ -159,6 +176,13 @@ else
     fi
     if ! kill -0 "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null; then
       printf ' 进程退出\n'
+      tail -n 30 "$RUN_DIR/backend.log" || true
+      fail "后端启动失败，完整日志见 $RUN_DIR/backend.log"
+    fi
+    # --reload 下 reloader 父进程在应用崩溃后仍存活（kill -0 检测不到），
+    # 以 multiprocessing worker 子进程（spawn_main）消失识别崩溃
+    if [ "$waited" -ge 10 ] && ! pgrep -P "$(cat "$RUN_DIR/backend.pid")" -f spawn_main >/dev/null 2>&1; then
+      printf ' 应用进程退出\n'
       tail -n 30 "$RUN_DIR/backend.log" || true
       fail "后端启动失败，完整日志见 $RUN_DIR/backend.log"
     fi
