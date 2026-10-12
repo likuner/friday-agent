@@ -44,7 +44,7 @@ cp .env.example .env
 - `MODEL_PROVIDER`：默认 `demo`；真实模型设置为 `deepseek`
 - `OPENAI_API_KEY`：DeepSeek API Key
 - `OPENAI_BASE_URL`：默认 `https://api.deepseek.com`
-- `OPENAI_MODEL`：默认 `deepseek-chat`
+- `OPENAI_MODEL`：默认 `deepseek-v4-pro`
 
 ## 启动 PostgreSQL
 

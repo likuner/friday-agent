@@ -129,7 +129,7 @@ async def my_tool(query: Annotated[str, Field(description="参数说明")]) -> s
 |---|---|---|
 | `ZHIPU_API_KEY` | 空 | 智谱开放平台密钥，`web_search` 依赖；未配置时工具返回可读提示 |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 智谱 API 地址 |
-| `GLM_MODEL` | `glm-4-flash` | 执行联网检索的模型 |
+| `GLM_MODEL` | `glm-5.3-flash` | 执行联网检索的模型 |
 | `GLM_SEARCH_ENGINE` | `search_std` | 搜索引擎（`search_std` 0.01元/次 / `search_pro` 0.03元/次） |
 | `MCP_TRANSPORT` | `stdio` | `stdio` / `http` |
 | `MCP_HOST` | `127.0.0.1` | 仅 http 模式生效；外网部署前必读上方检查清单 |

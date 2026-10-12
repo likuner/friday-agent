@@ -62,7 +62,7 @@ async def judge_answer(query: str, answer: str) -> float | None:
     resp = await httpx.AsyncClient(timeout=30).post(
         f"{os.getenv('EVAL_JUDGE_BASE_URL', 'https://open.bigmodel.cn/api/paas/v4')}/chat/completions",
         json={
-            "model": os.getenv("EVAL_JUDGE_MODEL", "glm-4-flash"),
+            "model": os.getenv("EVAL_JUDGE_MODEL", "glm-5.3-flash"),
             "messages": [{
                 "role": "user",
                 "content": f"给以下 AI 回答的质量打 1-5 分（相关性、完整性），只回复数字。\n问题：{query}\n回答：{answer[:800]}",

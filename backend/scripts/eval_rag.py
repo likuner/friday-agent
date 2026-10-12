@@ -53,7 +53,7 @@ async def judge_relevance(query: str, chunk: str) -> float | None:
     )
     resp = await httpx.AsyncClient(timeout=30).post(
         f"{os.getenv('EVAL_JUDGE_BASE_URL', 'https://open.bigmodel.cn/api/paas/v4')}/chat/completions",
-        json={"model": os.getenv("EVAL_JUDGE_MODEL", "glm-4-flash"), "messages": [{"role": "user", "content": prompt}]},
+        json={"model": os.getenv("EVAL_JUDGE_MODEL", "glm-5.3-flash"), "messages": [{"role": "user", "content": prompt}]},
         headers={"Authorization": f"Bearer {api_key}"},
     )
     text = resp.json()["choices"][0]["message"]["content"]

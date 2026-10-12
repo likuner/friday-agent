@@ -68,7 +68,7 @@ async for event in agent.reply_stream(本轮消息):  # 本轮输入（含图片
 
 | 项 | 实现 |
 | --- | --- |
-| 生成 | GLM（glm-4-flash）合并「旧摘要 + 溢出段」→ 新摘要，覆盖写回；提示词要求保留用户偏好/已确认事实/决策结论/未决问题，新信息覆盖旧信息 |
+| 生成 | GLM（glm-5.3-flash）合并「旧摘要 + 溢出段」→ 新摘要，覆盖写回；提示词要求保留用户偏好/已确认事实/决策结论/未决问题，新信息覆盖旧信息 |
 | 触发 | chat.py 装配窗口后：溢出 ≥ `summary_min_overflow_tokens` 即 `create_task` 后台执行（不阻塞对话、不依赖回复成败） |
 | 幂等 | `summary_upto_message_id` 游标推进到溢出段末条；重算窗口天然幂等 |
 | 并发 | 每会话 `asyncio.Lock`（弱引用字典，防泄漏）；压缩中重复触发直接跳过 |
@@ -154,7 +154,7 @@ memory_extract_min_messages: int = 1    # 新增消息数触发抽取（1 = 每�
 memory_max_tokens: int = 500            # 记忆合并输出上限
 ```
 
-摘要与抽取模型均复用 `glm_model`（glm-4-flash，免费档）与 `zhipu_api_key`。
+摘要与抽取模型均复用 `glm_model`（glm-5.3-flash，低价档；免费档可退 glm-4.7-flash）与 `zhipu_api_key`。
 
 ---
 
@@ -193,7 +193,7 @@ memory_max_tokens: int = 500            # 记忆合并输出上限
 
 ## 八、设计决策与取舍（相对原方案书的变化）
 
-1. **不用 AgentScope 内置 `context_config` 压缩**：它作用于进程内长寿命 Agent 的累积 context，与无状态回放架构冲突；且用主模型（DeepSeek）同步压缩，贵且在关键路径上。自研方案用免费 glm-4-flash 后台异步。读侧仍用框架原生能力（`AgentState.summary` 自动前置注入、`observe` 回放）。
+1. **不用 AgentScope 内置 `context_config` 压缩**：它作用于进程内长寿命 Agent 的累积 context，与无状态回放架构冲突；且用主模型（DeepSeek）同步压缩，贵且在关键路径上。自研方案用低价 glm-5.3-flash 后台异步。读侧仍用框架原生能力（`AgentState.summary` 自动前置注入、`observe` 回放）。
 2. **用户记忆从三层（画像表/事实条目表/向量旁表）简化为单行聚合**：在"无向量召回、无管理页面、全量注入"的选型下，多行结构的按条管理/召回能力用不上；单行 + GLM 合并重写与滚动摘要同构，代码量减半。代价：合并模型偶发漂移、将来按条管理需先拆回条目。
 3. **token 字符近似**：预算是软约束；tiktoken 对 DeepSeek 分词同样不精确，不值得引依赖。
 4. **摘要触发在流式开始前而非回复后**：单一触发点、不依赖回复成败/中止路径，正确性由游标幂等兜底。

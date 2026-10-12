@@ -16,9 +16,10 @@ class Settings(BaseSettings):
     model_provider: str = "demo"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.deepseek.com"
-    openai_model: str = "deepseek-chat"
-    # 深度思考模式使用的模型（需支持 reasoning，如 deepseek-v4-flash）；留空则退化为提示词引导
-    openai_thinking_model: str = "deepseek-v4-flash"
+    # V4 系列：deepseek-chat/deepseek-reasoner 已于 2026-07-24 退役
+    openai_model: str = "deepseek-v4-pro"
+    # 深度思考模式使用的模型（需支持 reasoning，V4 系列均原生支持）；留空则退化为提示词引导
+    openai_thinking_model: str = "deepseek-v4-pro"
     # RAG（医学文献混合检索：ES 稠密 knn + BM25/IK 稀疏 → RRF 融合 top N → rerank-2 精排）
     zhipu_api_key: str = ""
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
@@ -27,7 +28,7 @@ class Settings(BaseSettings):
     rerank_model: str = "rerank"
     # GLM 直连（长期记忆抽取 / 滚动摘要用，复用 zhipu_api_key）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    glm_model: str = "glm-4-flash"
+    glm_model: str = "glm-5.3-flash"
     # 联网搜索：转交 mcp-server（streamable-http）执行，检索逻辑与密钥都在 mcp-server 侧；
     # mcp_auth_token 与 mcp-server/.env 的 MCP_AUTH_TOKEN 保持一致，服务端未配鉴权则留空
     mcp_server_url: str = "http://127.0.0.1:8806/mcp"

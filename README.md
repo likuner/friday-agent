@@ -187,15 +187,15 @@ npm run dev
 | `MODEL_PROVIDER` | `demo` | `demo` 返回本地演示流；真正调用模型设为 `deepseek` |
 | `OPENAI_API_KEY` | 空 | 模型服务密钥；为空时走演示模式 |
 | `OPENAI_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
-| `OPENAI_MODEL` | `deepseek-chat` | 常规对话模型 |
-| `OPENAI_THINKING_MODEL` | `deepseek-v4-flash` | 深度思考模型，需支持 reasoning；留空则退化为提示词引导 |
+| `OPENAI_MODEL` | `deepseek-v4-pro` | 常规对话模型（V4 系列；`deepseek-chat` 已于 2026-07 退役） |
+| `OPENAI_THINKING_MODEL` | `deepseek-v4-pro` | 深度思考模型，需支持 reasoning（V4 系列均原生支持）；留空则退化为提示词引导 |
 | `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化、rerank 精排与联网搜索 |
 | `EMBEDDING_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 向量化与 rerank 接口地址 |
 | `EMBEDDING_MODEL` | `embedding-3` | 向量模型 |
 | `EMBEDDING_DIMENSIONS` | `1024` | 向量维度（需与语料入库时一致） |
 | `RERANK_MODEL` | `rerank` | 智谱 rerank 精排模型（复用 `ZHIPU_API_KEY`） |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 联网搜索的 GLM 接口地址 |
-| `GLM_MODEL` | `glm-4-flash` | 执行联网检索的 GLM 模型（免费；可换 `glm-4-air` 等） |
+| `GLM_MODEL` | `glm-5.3-flash` | 执行联网检索的 GLM 模型（低价档；可换 `glm-4.7-flash` 免费档） |
 | `GLM_SEARCH_ENGINE` | `search_std` | GLM 搜索引擎：`search_std` 0.01元/次 / `search_pro` 0.03元/次 |
 | `CONTEXT_TOKEN_BUDGET` | `1000` | 会话回放窗口 token 预算（开发调试值，生产建议 `16000`） |
 | `SUMMARY_MAX_TOKENS` | `500` | 会话滚动摘要目标长度 |
@@ -279,7 +279,7 @@ npm run dev
 ④ 本轮用户消息 + 图片附件（图片只随本轮发）
 ```
 
-- **会话级记忆**：每轮从 `messages` 表装配上下文；超出预算的早期历史由 GLM（glm-4-flash，免费档）后台异步压缩成滚动摘要落库（`conversations.summary`，进度游标幂等、失败下轮自愈）。Agent 每轮新建、进程内零跨请求状态——跨用户串味、重启失忆、并发中止连锁、切开关丢上下文从架构上消除。
+- **会话级记忆**：每轮从 `messages` 表装配上下文；超出预算的早期历史由 GLM（glm-5.3-flash）后台异步压缩成滚动摘要落库（`conversations.summary`，进度游标幂等、失败下轮自愈）。Agent 每轮新建、进程内零跨请求状态——跨用户串味、重启失忆、并发中止连锁、切开关丢上下文从架构上消除。
 - **用户级长期记忆**：`user_memories` 表每用户一行聚合文本；对话中后台 GLM 合并式抽取稳定事实与偏好（明确说"记住…"必收；排除临时上下文与健康敏感信息；新信息覆盖旧信息，如换城市），每轮查一行拼进 system prompt，跨会话生效。
 - 两条管线共用「每会话锁 + 进度游标 + 失败自愈」模式，互不阻塞对话流。
 
@@ -311,10 +311,10 @@ TRACING_ENABLED=true .venv/bin/python -m uvicorn app.main:app --reload --port 80
 
 ```
 invoke_agent Friday
-├── chat deepseek-chat                # 第一次模型调用（决定是否检索）
+├── chat deepseek-v4-pro               # 第一次模型调用（决定是否检索）
 ├── execute_tool medical_rag_search
 ├── execute_tool medical_rag_search   # 多角度并行检索
-└── chat deepseek-chat                # 带检索结果的第二次模型调用
+└── chat deepseek-v4-pro               # 带检索结果的第二次模型调用
 ```
 
 每条 trace 记录 token 用量（input / output / total）、耗时、模型名、会话 id，
@@ -377,7 +377,7 @@ npx tsc --noEmit   # 类型检查
 
 ## 已知限制
 
-- **默认模型已标记 sunset**：`deepseek-chat` / `deepseek-reasoner` 在 AgentScope 模型卡中为 `status: sunset`，当前可用的推理模型是 `deepseek-v4-flash` / `deepseek-v4-pro`。建议把 `OPENAI_MODEL` 一并迁到 v4 系列。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
+- **~~默认模型已标记 sunset~~（已迁移）**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 退役，`OPENAI_MODEL` / `OPENAI_THINKING_MODEL` 已迁到 `deepseek-v4-pro`（V4 系列均原生支持 thinking）。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
 - **`/files` 静态目录无鉴权**：依靠 32 位随机 UUID 文件名不可枚举来保护。正式产品建议改为带鉴权的下载接口或签名 URL。
 - **点赞状态仅保存在前端**：刷新后重置，未落库。
 - **历史图片不重复送模型**：多轮追问时，模型只能看到当前这一轮附带的图片（历史轮次回放为 `[图片]` 占位文本）。

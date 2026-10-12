@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     zhipu_api_key: str = ""
     # GLM 联网检索参数（与 backend 联网搜索同源约定）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    glm_model: str = "glm-4-flash"
+    glm_model: str = "glm-5.3-flash"
     glm_search_engine: str = "search_std"
     # 传输方式：stdio（本地客户端默认）/ http（streamable-http，供远程消费方）
     mcp_transport: str = "stdio"

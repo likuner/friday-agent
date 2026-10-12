@@ -157,13 +157,13 @@ backend/
 ### 4.4 agent.py 的关键实现点
 
 - **按开关组合装配**（`AgentService._get_agent()`）：以（深度思考, 联网搜索）组合为键懒加载并缓存
-  Agent（各自独立 Toolkit 与对话状态）。普通对话用 `openai_model`（deepseek-chat）；
-  「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-flash）时切换到
+  Agent（各自独立 Toolkit 与对话状态）。普通对话用 `openai_model`（deepseek-v4-pro）；
+  「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-pro）时切换到
   带 `thinking_enable=True` 的 reasoning Agent——思考过程以独立 `THINKING_BLOCK_DELTA`
   事件流出，前端折叠展示；未配置 thinking 模型则退化为提示词引导；
 - **联网搜索工具**：「联网搜索」打开且配置了 `ZHIPU_API_KEY` 时，`web_search` FunctionTool
   （app/websearch.py）随组合注册，系统提示词追加时效性检索指令；主模型 tool_call 触发后，
-  工具内部调用 GLM `chat/completions` + 内置 `web_search` 工具（`glm-4-flash` + `search_std`
+  工具内部调用 GLM `chat/completions` + 内置 `web_search` 工具（`glm-5.3-flash` + `search_std`
   引擎），把「GLM 检索摘要 + 原始网页结果（标题/链接/摘要/发布时间）」回填给主模型引用作答；
   未配置密钥时降级为提示词引导（模型会说明无法联网）；
 - **多模态消息**（`_user_message()`）：图片附件读文件 → base64 → `DataBlock(Base64Source)`，
