@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from pathlib import Path
 import asyncio
 import base64
 import json
@@ -14,6 +15,7 @@ from agentscope.message import AssistantMsg, Base64Source, DataBlock, Msg, TextB
 from agentscope.middleware import TracingMiddleware
 from agentscope.model import DeepSeekChatModel
 from agentscope.permission import PermissionBehavior, PermissionDecision, PermissionMode
+from agentscope.skill import LocalSkillLoader
 from agentscope.state import AgentState
 from agentscope.tool import FunctionTool, ToolBase, Toolkit
 
@@ -69,8 +71,8 @@ def _user_message(content: str, attachments: list[str] | None) -> UserMsg:
     return UserMsg(name="user", content=blocks)
 
 
-# chip 摘要的参数键优先级：检索词 → 命令 → 文件路径 → 搜索模式 → 目录 → 任务标题
-_TOOL_QUERY_KEYS = ("query", "command", "file_path", "pattern", "path", "subject")
+# chip 摘要的参数键优先级：检索词 → 命令 → 文件路径 → 搜索模式 → 目录 → 任务标题 → 技能名
+_TOOL_QUERY_KEYS = ("query", "command", "file_path", "pattern", "path", "subject", "skill")
 
 
 def _tool_query(raw_args: str) -> str:
@@ -122,6 +124,17 @@ def _search_mcp_client() -> MCPClient:
         ),
         enable_tools=["web_search"],
     )
+
+
+# Agent 技能目录（AgentScope 原生 skill 机制）：每个子目录一个 SKILL.md。
+# 框架把技能清单（name/description）自动注入 system prompt，模型经只读
+# 元工具 Skill 按需读取全文（渐进式披露，技能内容不再占用每轮提示词）。
+# scan_subdir=True 支持多技能并存；mtime 缓存跨请求共享，目录缺失仅告警
+# 不注入，不影响对话。新增技能=在 skills/ 下加目录，无需改代码。
+_SKILL_LOADER = LocalSkillLoader(
+    directory=str(Path(__file__).resolve().parents[1] / "skills"),
+    scan_subdir=True,
+)
 
 
 class AgentService:
@@ -190,7 +203,7 @@ class AgentService:
                 # DeepSeek 接口本身兼容，纯文本/工具调用路径实测同样正常。
                 formatter=OpenAIChatFormatter(),
             ),
-            toolkit=Toolkit(tools=tools, mcps=mcps),
+            toolkit=Toolkit(tools=tools, mcps=mcps, skills_or_loaders=[_SKILL_LOADER]),
         )
 
     async def stream(
@@ -256,6 +269,10 @@ class AgentService:
                         settings.mcp_server_url, exc,
                     )
                 mcps = [mcp_client]
+            # 技能注册探测：Toolkit 对扫不到的目录只静默告警，这条日志是排查
+            # 「skills/ 路径配错导致技能悄悄消失」的主线索（loader 内部不抛异常）
+            skill_names = [skill.name for skill in await _SKILL_LOADER.list_skills()]
+            logger.info("节点[Skill注册] dir=%s skills=%s", _SKILL_LOADER.directory, skill_names)
             # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
             state = AgentState(**state_kwargs)  # type: ignore[arg-type]
             agent = self._build(
