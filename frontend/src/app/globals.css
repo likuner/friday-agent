@@ -160,8 +160,10 @@ button, input, textarea { font: inherit; }
 .md img { max-width: 100%; border-radius: 10px; }
 .md .md-img-fallback { display: inline-block; font-size: 12px; color: rgb(var(--muted)); padding: 6px 10px; background: rgb(var(--soft)); border: 1px solid rgb(var(--line)); border-radius: 8px; }
 
-/* mermaid 图表容器：居中展示，超宽横向滚动 */
-.md .mermaid-box { margin: 0 0 12px; padding: 14px; display: flex; justify-content: center; overflow-x: auto; background: rgb(var(--surface)); border: 1px solid rgb(var(--line)); border-radius: 12px; }
+/* mermaid 图表容器：居中展示，超宽横向滚动。
+   min-height 抹平「图表生成中…占位(53px) → 渲染完成(常见小图 83~97px)」的高度差，
+   否则渲染落地那一下会把页面撑高/挤压滚动条，造成整页跳动 */
+.md .mermaid-box { margin: 0 0 12px; padding: 14px; min-height: 96px; display: flex; align-items: center; justify-content: center; overflow-x: auto; background: rgb(var(--surface)); border: 1px solid rgb(var(--line)); border-radius: 12px; }
 .md .mermaid-box:last-child { margin-bottom: 0; }
 .md .mermaid-box svg { max-width: 100%; height: auto; }
 .md .mermaid-hint { font-size: 12px; color: rgb(var(--muted)); }

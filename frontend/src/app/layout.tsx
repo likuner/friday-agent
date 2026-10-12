@@ -18,6 +18,17 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   return (
     <html lang="zh-CN" data-theme={theme} data-sidebar={sidebar} suppressHydrationWarning>
       <body suppressHydrationWarning>
+        {/* KaTeX 字体预热：会话消息里的公式在客户端拉取后才渲染（约几百 ms 后），
+            若那时字体未加载，会先按回退字体排版、字体到达后整体重排一次（刷新偏移的
+            残余来源之一）。这里用隐藏元素在文档解析期就把常用 KaTeX 字体拉下来，
+            公式首绘即最终布局。 */}
+        <span aria-hidden style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', visibility: 'hidden' }}>
+          <span style={{ fontFamily: 'KaTeX_Main' }}>x</span>
+          <span style={{ fontFamily: 'KaTeX_Math' }}>x</span>
+          <span style={{ fontFamily: 'KaTeX_Size1' }}>x</span>
+          <span style={{ fontFamily: 'KaTeX_Size2' }}>x</span>
+          <span style={{ fontFamily: 'KaTeX_Size4' }}>x</span>
+        </span>
         <AntdRegistry>
           <Providers initialTheme={theme}>{children}</Providers>
         </AntdRegistry>

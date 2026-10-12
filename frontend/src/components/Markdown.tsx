@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -117,12 +117,35 @@ function childClassName(node: ReactNode): string {
   return '';
 }
 
+// mermaid 图渲染高度的持久化 key：djb2 变体哈希，避免把整段源码塞进 key
+function mermaidHeightKey(code: string): string {
+  let h = 5381;
+  for (let i = 0; i < code.length; i += 1) h = ((h * 33) ^ code.charCodeAt(i)) >>> 0;
+  return `friday_mmd_h:${h.toString(36)}`;
+}
+
 // mermaid 懒加载：约 1MB 且多数会话用不到，动态 import 不进主包。
 // securityLevel:strict 会净化节点文本；渲染结果只含 SVG，注入风险可控。
 function MermaidBlock({ code }: { code: string }) {
   const { theme } = useThemeToggle();
   const [svg, setSvg] = useState<string>();
   const [failed, setFailed] = useState(false);
+  // 上次渲染过的高度（localStorage）：刷新时在图渲染落地前就预留出来，
+  // 大图（超过 CSS 里 96px 兜底）不再把下方内容推下去。新图没有缓存，
+  // 仍从 96px 长到实际高度——只在渲染成功后记录一次。
+  const [reserved, setReserved] = useState(0);
+  const box = useRef<HTMLDivElement | null>(null);
+  // render 的第三个参数（测量容器）：不传时 mermaid 会把临时测量元素直接
+  // append 到 document.body——它在文档流末尾、高约图高，会把页面瞬间撑过
+  // 视口，造成「窗口滚动条闪现又消失 + 整页 ±滚动条宽度抖动」。挂在组件内
+  // 的绝对定位零尺寸容器里测量，完全不影响布局。
+  const host = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    try {
+      const stored = Number(window.localStorage.getItem(mermaidHeightKey(code)));
+      if (Number.isFinite(stored) && stored > 96) setReserved(Math.min(stored, 2000));
+    } catch { /* localStorage 不可用（隐私模式等）时静默跳过 */ }
+  }, [code]);
   useEffect(() => {
     let alive = true;
     setFailed(false);
@@ -136,7 +159,7 @@ function MermaidBlock({ code }: { code: string }) {
             securityLevel: 'strict',
             theme: theme === 'dark' ? 'dark' : 'default',
           });
-          return module.default.render(`mmd-${crypto.randomUUID()}`, code);
+          return module.default.render(`mmd-${crypto.randomUUID()}`, code, host.current ?? undefined);
         })
         .then(
           (result) => { if (alive) setSvg(result.svg); },
@@ -145,6 +168,18 @@ function MermaidBlock({ code }: { code: string }) {
     }, 300);
     return () => { alive = false; clearTimeout(timer); };
   }, [code, theme]);
+  // 渲染成功后把实际高度记进 localStorage，供下次刷新预留。
+  // 量的是 SVG 本体 + 内边距（14×2）+ 边框（1×2），不受预留中的 minHeight 影响，
+  // 图缩小时（如换主题）记录值也会跟着回落，不会锁死过大预留。
+  useEffect(() => {
+    if (!svg || !box.current) return;
+    const content = box.current.querySelector('.mermaid-svg');
+    if (!content) return;
+    const height = Math.round(content.getBoundingClientRect().height) + 30;
+    if (height > 96) {
+      try { window.localStorage.setItem(mermaidHeightKey(code), String(height)); } catch { /* 同上 */ }
+    }
+  }, [svg, code]);
   if (failed) {
     return (
       <div className="code-block">
@@ -154,7 +189,8 @@ function MermaidBlock({ code }: { code: string }) {
     );
   }
   return (
-    <div className="mermaid-box">
+    <div ref={box} className="mermaid-box" style={reserved ? { minHeight: reserved } : undefined}>
+      <div ref={host} aria-hidden style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }} />
       {svg
         ? <div className="mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} />
         : <span className="mermaid-hint">图表生成中…</span>}
