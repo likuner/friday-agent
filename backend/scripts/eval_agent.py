@@ -150,7 +150,8 @@ async def main() -> None:
     print(f"通过 {passed_count}/{len(results)}")
     if not summary["judge_enabled"]:
         print("（LLM 裁判未启用：未配置 EVAL_JUDGE_API_KEY，已跳过质量打分）")
-    out = Path(__file__).resolve().parent.parent / "logs" / "eval_agent.json"
+    # 报告与全部运行日志统一放仓库根 logs/（scripts → backend → 仓库根）
+    out = Path(__file__).resolve().parents[2] / "logs" / "eval_agent.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("评测[Agent完成] passed=%s/%s duration=%.1fs 报告=%s", passed_count, len(results), summary["duration_s"], out)

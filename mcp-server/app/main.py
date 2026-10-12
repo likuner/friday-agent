@@ -1,20 +1,25 @@
-"""服务入口：日志走 stderr（stdio 模式下 stdout 是 JSON-RPC 通道，绝不能污染），
+"""服务入口：控制台日志走 stderr（stdio 模式下 stdout 是 JSON-RPC 通道，绝不能污染），
 按配置选择传输运行。import app.tools 触发全部工具注册。
+
+文件日志由 friday_shared 统一配置：滚动写仓库根 logs/mcp-server.log，
+与传输方式无关（stdio 模式被客户端拉起时也有持久日志）。
 """
 
 import logging
-import sys
+
+from friday_shared import setup_service_logging
 
 from .config import settings
 from .server import mcp
 
 
 def _setup_logging() -> None:
-    level = logging.DEBUG if settings.mcp_transport == "stdio" else logging.INFO
-    logging.basicConfig(
-        level=level,
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    setup_service_logging(
+        service="mcp-server",
+        logger_name="mcp-server",
+        # 控制台级别沿用原行为：stdio 交互调试开 DEBUG，http 常驻服务用 INFO；
+        # 文件始终收 DEBUG 全量
+        console_level=logging.DEBUG if settings.mcp_transport == "stdio" else logging.INFO,
     )
 
 

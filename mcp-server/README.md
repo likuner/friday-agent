@@ -38,9 +38,10 @@ chmod 600 .env
 
 - **stdio（默认）**：`MCP_TRANSPORT` 不配即为 stdio，由客户端作为子进程拉起，无需手动运行
 - **http**：`MCP_TRANSPORT=http .venv/bin/python -m app`，监听 `MCP_HOST:MCP_PORT`（默认 `127.0.0.1:8806`），端点路径 `/mcp`
-- **一键托管**：仓库根目录 `./start.sh` / `./stop.sh` 已把 http 模式纳入统一启停（PID 与日志在 `.run/mcp-server.*`），日常无需手动运行；backend 的联网搜索即经此 http 端点消费（`backend/.env` 的 `MCP_AUTH_TOKEN` 需与本服务一致）
+- **一键托管**：仓库根目录 `./start.sh` / `./stop.sh` 已把 http 模式纳入统一启停（PID 在 `.run/`，控制台镜像在 `logs/mcp-server.console.log`），日常无需手动运行；backend 的联网搜索即经此 http 端点消费（`backend/.env` 的 `MCP_AUTH_TOKEN` 需与本服务一致）
+- **文件日志**：两种传输模式都滚动写仓库根 `logs/mcp-server.log`（DEBUG 全量，5MB×3 备份），由 `shared/`（friday-shared 包，`-e ../shared` 安装）统一配置，与 CWD 无关
 
-stdio 模式下 stdout 是 JSON-RPC 通道，服务日志一律写 stderr。
+stdio 模式下 stdout 是 JSON-RPC 通道，服务控制台日志一律写 stderr。
 
 ## 鉴权（http 模式）
 

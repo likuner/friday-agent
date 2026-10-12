@@ -19,12 +19,13 @@ ENV/
 .ruff_cache/
 
 # ===== 运行期数据 =====
-# 一键启动脚本的 PID / 日志
+# 一键启动脚本的 PID / 导入检查产物
 .run/
 
-# 日志
+# 日志（根 logs/ 统一收：滚动业务日志 + 控制台镜像 + eval 报告）
+# 无前导斜杠的 logs/ 同时匹配任意子目录中的 logs
+logs/
 *.log
-backend/logs/
 
 # 用户上传的图片（属于运行数据，不入库）
 backend/files/

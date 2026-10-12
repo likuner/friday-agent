@@ -3,6 +3,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from friday_shared import setup_service_logging
 
 from .agent_tools import WORKSPACES_DIR
 from .auth_routes import router as auth_router
@@ -11,14 +12,14 @@ from .conversations import router as conversations_router
 from .db import init_db
 from .chat import router as chat_router
 from .files import FILES_DIR, router as files_router
-from .logging_config import setup_logging
 from .tracing import setup_tracing, shutdown_tracing
 from .workspace_picker import router as workspaces_router
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    setup_logging()
+    # 统一日志：控制台 INFO + 根 logs/backend.log 滚动 DEBUG（friday 业务 logger）
+    setup_service_logging(service="backend", logger_name="friday")
     setup_tracing()
     await init_db()
     logging.getLogger("friday").info("服务启动完成 model_provider=%s", settings.model_provider)

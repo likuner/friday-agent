@@ -1,3 +1,5 @@
 fastmcp>=2.11
 httpx>=0.27
 pydantic-settings>=2.6
+# 共享基础设施（统一日志配置等），editable 安装仓库根 shared/ 包
+-e ../shared

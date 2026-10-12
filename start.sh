@@ -10,12 +10,17 @@
 #   ./start.sh --no-es      # 跳过 Elasticsearch（省内存，仅医学 RAG 不可用）
 #   ./start.sh --no-kibana  # 跳过 Kibana
 #
-# 日志与 PID 在 .run/ 目录，停止用 ./stop.sh
+# 日志在 logs/（业务滚动日志 *.log + 控制台镜像 *.console.log），PID 在 .run/，停止用 ./stop.sh
 set -euo pipefail
 
+# 日志与 PID 分家：logs/ 收全部日志（滚动业务日志 + 控制台镜像），.run/ 只放 PID 与检查产物
 ROOT="$(cd "$(dirname "$BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="$ROOT/.run"
-mkdir -p "$RUN_DIR"
+LOG_DIR="$ROOT/logs"
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+BACKEND_CONSOLE="$LOG_DIR/backend.console.log"
+MCP_CONSOLE="$LOG_DIR/mcp-server.console.log"
+FRONTEND_CONSOLE="$LOG_DIR/frontend.console.log"
 
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
@@ -162,25 +167,25 @@ else
   fi
 
   # MCP_TRANSPORT 经进程环境变量覆盖 .env 的 stdio 默认（pydantic-settings 环境变量优先于 .env）
-  MCP_TRANSPORT=http nohup .venv/bin/python -m app > "$RUN_DIR/mcp-server.log" 2>&1 &
+  MCP_TRANSPORT=http nohup .venv/bin/python -m app > "$MCP_CONSOLE" 2>&1 &
   echo $! > "$RUN_DIR/mcp-server.pid"
-  info "MCP 服务 PID $(cat "$RUN_DIR/mcp-server.pid")，日志 $RUN_DIR/mcp-server.log"
+  info "MCP 服务 PID $(cat "$RUN_DIR/mcp-server.pid")，日志 $MCP_CONSOLE"
   # 就绪以端口监听为准：/mcp 是 streamable-http 端点，普通 GET 不返回 200，不能像后端那样 curl 判活
   waited=0
   printf '等待端口监听 :%s' "$MCP_PORT"
   while ! port_listening "$MCP_PORT"; do
     if ! kill -0 "$(cat "$RUN_DIR/mcp-server.pid")" 2>/dev/null; then
       printf ' 进程退出\n'
-      tail -n 30 "$RUN_DIR/mcp-server.log" || true
-      fail "MCP 服务启动失败，完整日志见 $RUN_DIR/mcp-server.log"
+      tail -n 30 "$MCP_CONSOLE" || true
+      fail "MCP 服务启动失败，完整日志见 $MCP_CONSOLE"
     fi
     printf '.'
     sleep 2
     waited=$((waited + 2))
     if [ "$waited" -ge 60 ]; then
       printf ' 超时\n'
-      tail -n 30 "$RUN_DIR/mcp-server.log" || true
-      fail "MCP 服务 60s 内未监听 $MCP_PORT，完整日志见 $RUN_DIR/mcp-server.log"
+      tail -n 30 "$MCP_CONSOLE" || true
+      fail "MCP 服务 60s 内未监听 $MCP_PORT，完整日志见 $MCP_CONSOLE"
     fi
   done
   printf ' 完成\n'
@@ -224,9 +229,9 @@ else
   fi
 
   nohup .venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port "$BACKEND_PORT" \
-    > "$RUN_DIR/backend.log" 2>&1 &
+    > "$BACKEND_CONSOLE" 2>&1 &
   echo $! > "$RUN_DIR/backend.pid"
-  info "后端 PID $(cat "$RUN_DIR/backend.pid")，日志 $RUN_DIR/backend.log"
+  info "后端 PID $(cat "$RUN_DIR/backend.pid")，日志 $BACKEND_CONSOLE"
   waited=0
   printf '等待健康检查 http://localhost:%s/health' "$BACKEND_PORT"
   while true; do
@@ -237,23 +242,23 @@ else
     fi
     if ! kill -0 "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null; then
       printf ' 进程退出\n'
-      tail -n 30 "$RUN_DIR/backend.log" || true
-      fail "后端启动失败，完整日志见 $RUN_DIR/backend.log"
+      tail -n 30 "$BACKEND_CONSOLE" || true
+      fail "后端启动失败，完整日志见 $BACKEND_CONSOLE"
     fi
     # --reload 下 reloader 父进程在应用崩溃后仍存活（kill -0 检测不到），
     # 以 multiprocessing worker 子进程（spawn_main）消失识别崩溃
     if [ "$waited" -ge 10 ] && ! pgrep -P "$(cat "$RUN_DIR/backend.pid")" -f spawn_main >/dev/null 2>&1; then
       printf ' 应用进程退出\n'
-      tail -n 30 "$RUN_DIR/backend.log" || true
-      fail "后端启动失败，完整日志见 $RUN_DIR/backend.log"
+      tail -n 30 "$BACKEND_CONSOLE" || true
+      fail "后端启动失败，完整日志见 $BACKEND_CONSOLE"
     fi
     printf '.'
     sleep 2
     waited=$((waited + 2))
     if [ "$waited" -ge 90 ]; then
       printf ' 超时\n'
-      tail -n 30 "$RUN_DIR/backend.log" || true
-      fail "后端 90s 内未就绪，完整日志见 $RUN_DIR/backend.log"
+      tail -n 30 "$BACKEND_CONSOLE" || true
+      fail "后端 90s 内未就绪，完整日志见 $BACKEND_CONSOLE"
     fi
   done
 fi
@@ -269,9 +274,9 @@ cd "$ROOT/frontend"
 if port_listening "$FRONTEND_PORT"; then
   warn "端口 $FRONTEND_PORT 已被占用，假定前端已在运行，跳过启动"
 else
-  nohup npm run dev > "$RUN_DIR/frontend.log" 2>&1 &
+  nohup npm run dev > "$FRONTEND_CONSOLE" 2>&1 &
   echo $! > "$RUN_DIR/frontend.pid"
-  info "前端 PID $(cat "$RUN_DIR/frontend.pid")，日志 $RUN_DIR/frontend.log"
+  info "前端 PID $(cat "$RUN_DIR/frontend.pid")，日志 $FRONTEND_CONSOLE"
   waited=0
   printf '等待前端编译'
   while true; do
@@ -282,16 +287,16 @@ else
     fi
     if ! kill -0 "$(cat "$RUN_DIR/frontend.pid")" 2>/dev/null; then
       printf ' 进程退出\n'
-      tail -n 30 "$RUN_DIR/frontend.log" || true
-      fail "前端启动失败，完整日志见 $RUN_DIR/frontend.log"
+      tail -n 30 "$FRONTEND_CONSOLE" || true
+      fail "前端启动失败，完整日志见 $FRONTEND_CONSOLE"
     fi
     printf '.'
     sleep 2
     waited=$((waited + 2))
     if [ "$waited" -ge 180 ]; then
       printf ' 超时\n'
-      tail -n 30 "$RUN_DIR/frontend.log" || true
-      fail "前端 180s 内未就绪（首次编译较慢），可稍后自行查看 $RUN_DIR/frontend.log"
+      tail -n 30 "$FRONTEND_CONSOLE" || true
+      fail "前端 180s 内未就绪（首次编译较慢），可稍后自行查看 $FRONTEND_CONSOLE"
     fi
   done
 fi
@@ -307,6 +312,8 @@ cat <<EOF
   MCP 服务   http://localhost:$MCP_PORT/mcp （联网搜索等公共工具）
   Kibana     http://localhost:5601 （若已启动）
 
-  日志目录   $RUN_DIR/（backend.log / frontend.log / mcp-server.log）
+  业务日志   logs/（backend.log / mcp-server.log，滚动 DEBUG 全量）
+  控制台镜像 logs/（*.console.log，重启截断：uvicorn/next 启动与崩溃现场）
+  PID 目录   $RUN_DIR/
   一键停止   ./stop.sh
 EOF

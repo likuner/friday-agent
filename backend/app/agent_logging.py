@@ -4,7 +4,8 @@
 Agent 上的中间件：模型调用、工具调用/参数/结果、耗时、token 用量都在钩子里记，
 ``stream()`` 只保留「事件 → SSE 翻译」职责。边界：服务层上下文（回放条数、摘要、
 开关）仍在 agent.py；工具内部过程日志仍在 rag.py 等本地工具模块（联网搜索
-已移至 mcp-server，其过程日志记在服务端）。
+已移至 mcp-server，其过程日志记在服务端）。DEBUG 明细进根 logs/backend.log
+（friday_shared 统一配置），控制台是 INFO 不受影响。
 """
 
 import logging

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "friday-shared"
+version = "0.1.0"
+description = "friday-agent 各子项目（backend / mcp-server）共享的基础设施：统一日志配置"
+requires-python = ">=3.11"
+# 纯 stdlib，零第三方依赖：两个独立 venv（py3.12 / py3.14）各装一份 editable 即可
+
+[tool.setuptools.packages.find]
+include = ["friday_shared*"]

@@ -121,7 +121,8 @@ async def main() -> None:
     print(f"Hit@{TOP_K}: {summary['hit_rate']}  MRR: {summary['mrr']}  平均Top分: {summary['avg_top_score']}")
     if not summary["judge_enabled"]:
         print("（LLM 裁判未启用：未配置 EVAL_JUDGE_API_KEY，已跳过相关性评分）")
-    out = Path(__file__).resolve().parent.parent / "logs" / "eval_rag.json"
+    # 报告与全部运行日志统一放仓库根 logs/（scripts → backend → 仓库根）
+    out = Path(__file__).resolve().parents[2] / "logs" / "eval_rag.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("评测[RAG完成] hit_rate=%s mrr=%s duration=%.1fs 报告=%s", hit_rate, mrr, summary["duration_s"], out)
