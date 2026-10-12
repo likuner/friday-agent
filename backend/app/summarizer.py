@@ -21,7 +21,6 @@ from .config import settings
 from .context import build_context_window, clean_for_replay, estimate_tokens
 from .db import SessionLocal
 from .models import Conversation, Message
-from .websearch import web_search_available
 
 logger = logging.getLogger("friday.summarizer")
 
@@ -77,7 +76,7 @@ async def _compress(old_summary: str | None, segment: list[dict[str, str]]) -> s
 async def update_rolling_summary(conversation_id: UUID) -> None:
     """后台压缩溢出段并写回会话摘要。永不抛出：失败记日志，下一轮自愈重试。"""
     global _warned_no_key
-    if not web_search_available():
+    if not settings.zhipu_api_key:
         if not _warned_no_key:
             logger.warning("节点[摘要停用] 未配置 ZHIPU_API_KEY，跳过滚动摘要（回放窗口照常截断）")
             _warned_no_key = True

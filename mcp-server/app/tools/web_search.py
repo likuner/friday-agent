@@ -12,6 +12,7 @@ import time
 from typing import Annotated
 
 import httpx
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from ..config import settings
@@ -88,7 +89,10 @@ def _format_results(summary: str, results: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-@mcp.tool
+@mcp.tool(
+    # 声明只读：AgentScope 等消费方据此自动放行，不弹人工确认（无注解默认按需确认处理）
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 async def web_search(
     query: Annotated[str, Field(description="搜索关键词或问题，涉及时效性内容时使用")],
     count: Annotated[int, Field(description="返回的网页结果条数", ge=1, le=20)] = 5,

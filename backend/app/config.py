@@ -25,10 +25,13 @@ class Settings(BaseSettings):
     embedding_model: str = "embedding-3"
     embedding_dimensions: int = 1024
     rerank_model: str = "rerank"
-    # 联网搜索：主模型 tool_call 触发 web_search 工具，转交 GLM 内置联网检索执行（复用 zhipu_api_key）
+    # GLM 直连（长期记忆抽取 / 滚动摘要用，复用 zhipu_api_key）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-4-flash"
-    glm_search_engine: str = "search_std"
+    # 联网搜索：转交 mcp-server（streamable-http）执行，检索逻辑与密钥都在 mcp-server 侧；
+    # mcp_auth_token 与 mcp-server/.env 的 MCP_AUTH_TOKEN 保持一致，服务端未配鉴权则留空
+    mcp_server_url: str = "http://127.0.0.1:8806/mcp"
+    mcp_auth_token: str = ""
     # 会话级记忆（上下文管理）：回放窗口 token 预算与滚动摘要参数。
     # 溢出段（早于窗口、晚于摘要游标）攒够 summary_min_overflow_tokens 才触发后台压缩，
     # 避免每轮都做小规模摘要；摘要模型复用 glm_model。

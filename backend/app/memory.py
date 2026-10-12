@@ -21,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .db import SessionLocal
 from .models import Conversation, Message, UserMemory
-from .websearch import web_search_available
 
 logger = logging.getLogger("friday.memory")
 
@@ -160,7 +159,7 @@ async def extract_user_memory(conversation_id: UUID, user_id: UUID) -> None:
     global _warned_no_key
     if not settings.memory_enabled:
         return
-    if not web_search_available():
+    if not settings.zhipu_api_key:
         if not _warned_no_key:
             logger.warning("节点[记忆停用] 未配置 ZHIPU_API_KEY，跳过长记忆抽取（读取注入不受影响）")
             _warned_no_key = True

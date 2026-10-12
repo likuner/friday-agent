@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键停止 Friday Agent 本地环境：前端/后端进程 + Docker 容器（postgres、med-es、med-kibana）。
+# 一键停止 Friday Agent 本地环境：前端/后端/MCP 工具服务进程 + Docker 容器（postgres、med-es、med-kibana）。
 # 只停止容器不删除数据卷；如需彻底清理请手动执行 docker compose down。
 set -euo pipefail
 
@@ -41,6 +41,8 @@ stop_service() {
 
 stop_service "前端" "frontend.pid"
 stop_service "后端" "backend.pid"
+# 先停消费方（backend）再停 MCP 工具服务
+stop_service "MCP 工具服务" "mcp-server.pid"
 
 # Docker 容器：存在才停止
 for c in med-kibana med-es; do

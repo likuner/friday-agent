@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 一键启动 Friday Agent 全套本地环境：
 #   1. Docker 容器：postgres（compose）+ med-es / med-kibana（独立容器）
-#   2. 后端：FastAPI uvicorn (http://localhost:8000)
-#   3. 前端：Next.js dev (http://localhost:3000)
+#   2. MCP 工具服务：FastMCP streamable-http (http://localhost:8806，联网搜索在后端经它执行)
+#   3. 后端：FastAPI uvicorn (http://localhost:8000)
+#   4. 前端：Next.js dev (http://localhost:3000)
 #
 # 用法：
 #   ./start.sh              # 全部启动
@@ -18,6 +19,7 @@ mkdir -p "$RUN_DIR"
 
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
+MCP_PORT=8806
 ES_IMAGE="docker.elastic.co/elasticsearch/elasticsearch:9.5.4"
 IK_PLUGIN_URL="https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-9.5.4.zip"
 
@@ -126,7 +128,66 @@ if $START_KIBANA; then
   fi
 fi
 
-# ========== 4. 后端 ==========
+# ========== 4. MCP 工具服务（联网搜索等公共工具，backend 经 MCP 客户端调用） ==========
+section "启动 MCP 工具服务 (http :$MCP_PORT)"
+cd "$ROOT/mcp-server"
+
+if [ ! -d .venv ]; then
+  info "创建虚拟环境（首次较慢）"
+  python3 -m venv .venv
+  .venv/bin/python -m pip install --upgrade pip
+fi
+[ -f .env ] || { cp .env.example .env; warn "已从 .env.example 生成 mcp-server/.env，请按需配置 ZHIPU_API_KEY / MCP_AUTH_TOKEN"; }
+
+if port_listening "$MCP_PORT"; then
+  warn "端口 $MCP_PORT 已被占用，假定 MCP 服务已在运行，跳过启动"
+else
+  # 依赖同步：与后端段同款哈希戳记幂等安装（戳记在 .venv 内，重建后自动失效）
+  REQ_STAMP=".venv/.req.stamp"
+  REQ_HASH="$(shasum requirements.txt | cut -d' ' -f1)"
+  if [ "$(cat "$REQ_STAMP" 2>/dev/null || true)" != "$REQ_HASH" ]; then
+    info "同步依赖 requirements.txt"
+    if ! .venv/bin/python -m pip install -q -r requirements.txt; then
+      fail "MCP 服务依赖安装失败，请手动执行：cd mcp-server && .venv/bin/python -m pip install -r requirements.txt"
+    fi
+    echo "$REQ_HASH" > "$REQ_STAMP"
+  else
+    info "依赖已同步（requirements.txt 未变化，跳过安装）"
+  fi
+
+  # 导入预检：依赖或代码问题在此即刻暴露
+  if ! .venv/bin/python -c "import app.main" 2> "$RUN_DIR/mcp_import_check.err"; then
+    tail -n 25 "$RUN_DIR/mcp_import_check.err"
+    fail "MCP 服务导入失败，完整输出见 $RUN_DIR/mcp_import_check.err"
+  fi
+
+  # MCP_TRANSPORT 经进程环境变量覆盖 .env 的 stdio 默认（pydantic-settings 环境变量优先于 .env）
+  MCP_TRANSPORT=http nohup .venv/bin/python -m app > "$RUN_DIR/mcp-server.log" 2>&1 &
+  echo $! > "$RUN_DIR/mcp-server.pid"
+  info "MCP 服务 PID $(cat "$RUN_DIR/mcp-server.pid")，日志 $RUN_DIR/mcp-server.log"
+  # 就绪以端口监听为准：/mcp 是 streamable-http 端点，普通 GET 不返回 200，不能像后端那样 curl 判活
+  waited=0
+  printf '等待端口监听 :%s' "$MCP_PORT"
+  while ! port_listening "$MCP_PORT"; do
+    if ! kill -0 "$(cat "$RUN_DIR/mcp-server.pid")" 2>/dev/null; then
+      printf ' 进程退出\n'
+      tail -n 30 "$RUN_DIR/mcp-server.log" || true
+      fail "MCP 服务启动失败，完整日志见 $RUN_DIR/mcp-server.log"
+    fi
+    printf '.'
+    sleep 2
+    waited=$((waited + 2))
+    if [ "$waited" -ge 60 ]; then
+      printf ' 超时\n'
+      tail -n 30 "$RUN_DIR/mcp-server.log" || true
+      fail "MCP 服务 60s 内未监听 $MCP_PORT，完整日志见 $RUN_DIR/mcp-server.log"
+    fi
+  done
+  printf ' 完成\n'
+fi
+ok "MCP 工具服务就绪 http://127.0.0.1:$MCP_PORT/mcp"
+
+# ========== 5. 后端 ==========
 section "启动后端 (uvicorn :$BACKEND_PORT)"
 cd "$ROOT/backend"
 
@@ -198,7 +259,7 @@ else
 fi
 ok "后端就绪 http://localhost:$BACKEND_PORT/health （文档 /docs）"
 
-# ========== 5. 前端 ==========
+# ========== 6. 前端 ==========
 section "启动前端 (next dev :$FRONTEND_PORT)"
 cd "$ROOT/frontend"
 
@@ -243,8 +304,9 @@ cat <<EOF
   前端页面   http://localhost:$FRONTEND_PORT
   后端 API   http://localhost:$BACKEND_PORT/health
   API 文档   http://localhost:$BACKEND_PORT/docs
+  MCP 服务   http://localhost:$MCP_PORT/mcp （联网搜索等公共工具）
   Kibana     http://localhost:5601 （若已启动）
 
-  日志目录   $RUN_DIR/（backend.log / frontend.log）
+  日志目录   $RUN_DIR/（backend.log / frontend.log / mcp-server.log）
   一键停止   ./stop.sh
 EOF

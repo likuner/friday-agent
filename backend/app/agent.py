@@ -9,6 +9,7 @@ from agentscope.agent import Agent
 from agentscope.credential import DeepSeekCredential
 from agentscope.event import ConfirmResult, EventType, RequireUserConfirmEvent, UserConfirmResultEvent
 from agentscope.formatter import OpenAIChatFormatter
+from agentscope.mcp import HttpMCPConfig, MCPClient
 from agentscope.message import AssistantMsg, Base64Source, DataBlock, Msg, TextBlock, UserMsg
 from agentscope.middleware import TracingMiddleware
 from agentscope.model import DeepSeekChatModel
@@ -23,9 +24,6 @@ from .confirm import AskAnswer, PendingAsk, confirm_hub
 from .files import resolve_stored_image
 from .prompts import AGENT_TOOLS_PROMPT, AGENT_TOOLS_PROMPT_HOST, SYSTEM_PROMPT, WEB_SEARCH_PROMPT
 from .rag import medical_rag_search
-# 别名避免与 _build/stream 的 web_search 布尔参数互相遮蔽
-from .websearch import web_search as _web_search_tool
-from .websearch import web_search_available
 
 logger = logging.getLogger("friday.agent")
 
@@ -100,6 +98,32 @@ def _replay_msgs(replay: list[dict[str, str]]) -> list[Msg]:
     ]
 
 
+def _search_mcp_client() -> MCPClient:
+    """联网搜索的 MCP 客户端（mcp-server，streamable-http）。
+
+    is_stateful=False：每次调用临时建 HTTP 会话，无需 connect/close，
+    mcp-server 重启也不影响后续请求；工具只读已在服务端以 readOnlyHint
+    声明（自动放行）。enable_tools 白名单注册，mcp-server 未来新增工具
+    不会自动灌给模型。服务端不可达时 Toolkit 仅告警并跳过，对话退化为
+    未开联网搜索，不会报错中断。
+    """
+    return MCPClient(
+        name="common_tools",
+        is_stateful=False,
+        mcp_config=HttpMCPConfig(
+            url=settings.mcp_server_url,
+            headers=(
+                {"Authorization": f"Bearer {settings.mcp_auth_token}"}
+                if settings.mcp_auth_token
+                else None
+            ),
+            # 需覆盖 mcp-server 内 GLM 检索的 60s httpx 超时再留余量
+            timeout=90,
+        ),
+        enable_tools=["web_search"],
+    )
+
+
 class AgentService:
     """无状态的对话服务：跨请求不持有任何 Agent 上下文（记忆的唯一事实来源是数据库）。
 
@@ -127,6 +151,7 @@ class AgentService:
         memory_block: str | None = None,
         builtin_tools: list[ToolBase] | None = None,
         agent_tools_prompt: str = "",
+        mcps: list[MCPClient] | None = None,
     ) -> Agent:
         # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写
         tools = [
@@ -140,17 +165,6 @@ class AgentService:
                 ),
             ),
         ]
-        if web_search:
-            tools.append(
-                FunctionTool(
-                    _web_search_tool,
-                    name="web_search",
-                    permission=PermissionDecision(
-                        behavior=PermissionBehavior.ALLOW,
-                        message="只读联网检索，自动允许",
-                    ),
-                ),
-            )
         # 内置工具（Bash/文件/任务）：与 FunctionTool 混排注册，权限由 AgentState 的
         # DONT_ASK 上下文裁决（工作区内写入放行、敏感路径 deny、其余拒绝）
         if builtin_tools:
@@ -176,7 +190,7 @@ class AgentService:
                 # DeepSeek 接口本身兼容，纯文本/工具调用路径实测同样正常。
                 formatter=OpenAIChatFormatter(),
             ),
-            toolkit=Toolkit(tools=tools),
+            toolkit=Toolkit(tools=tools, mcps=mcps),
         )
 
     async def stream(
@@ -195,8 +209,9 @@ class AgentService:
         user_id: UUID | None = None,
     ) -> AsyncIterator[dict[str, str]]:
         use_thinking = deep_thinking and bool(settings.openai_thinking_model)
-        # 联网搜索需要智谱密钥（GLM 内置 web_search 执行）；未配置时降级为提示词引导
-        use_search = web_search and web_search_available()
+        # 联网搜索转交 mcp-server 执行；URL 未配置时降级为提示词引导
+        # （服务端临时不可达由 Toolkit 列工具时静默跳过，不影响对话）
+        use_search = web_search and bool(settings.mcp_server_url)
         # 内置工具受服务端总开关约束（安全边界见 agent_tools.py 模块说明）
         use_agent_tools = agent_tools and settings.agent_tools_enabled
         builtin_tools = None
@@ -224,12 +239,30 @@ class AgentService:
                     # 产出文件下载走鉴权路由（前端会拦截该前缀链接做带 token 下载）
                     public_prefix=f"/api/workspaces/{conversation_id}",
                 )
+            # MCP 客户端实例化后先探测一次可用工具并落日志：Toolkit 对列工具失败
+            # 只静默跳过，这条日志是排查「mcp-server 未启动导致联网搜索悄悄消失」的主线索
+            mcps: list[MCPClient] | None = None
+            if use_search:
+                mcp_client = _search_mcp_client()
+                try:
+                    mcp_tool_names = [tool.name for tool in await mcp_client.list_tools()]
+                    logger.info(
+                        "节点[MCP工具注册] server=%s tools=%s",
+                        settings.mcp_server_url, mcp_tool_names,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "节点[MCP工具注册失败] server=%s error=%s（本轮对话无联网搜索工具，继续）",
+                        settings.mcp_server_url, exc,
+                    )
+                mcps = [mcp_client]
             # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
             state = AgentState(**state_kwargs)  # type: ignore[arg-type]
             agent = self._build(
                 self._credential, model, state,
                 thinking=use_thinking, web_search=use_search, memory_block=memory_block,
                 builtin_tools=builtin_tools, agent_tools_prompt=agent_tools_prompt,
+                mcps=mcps,
             )
             user_content = content
             # 有 reasoning 模型时由模型真正产出思考过程；没有才退化成提示词引导
