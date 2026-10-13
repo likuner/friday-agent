@@ -1,15 +1,25 @@
-"""医学文献混合检索（med-es 容器：Elasticsearch 稠密 knn + BM25/IK 稀疏，RRF 融合后经智谱 rerank-2 精排）。"""
+"""医学文献混合检索工具：med-es 容器（Elasticsearch 稠密 knn + BM25/IK 稀疏），
+RRF 融合后经智谱 rerank-2 精排（移植自 backend/app/rag.py，检索逻辑不变）。
+
+链路：消费方（agent/客户端）调用 medical_rag_search(query, top_k)
+   → 智谱 embedding 向量化 → ES 双路并行召回 → 应用层 RRF 融合
+   → 智谱 rerank 精排 → 按分数阈值过滤后拼成工具结果返回。
+"""
 
 import asyncio
 import logging
 import time
+from typing import Annotated
 
 import httpx
 from elasticsearch import AsyncElasticsearch
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
-from .config import settings
+from ..config import settings
+from ..server import mcp
 
-logger = logging.getLogger("friday.rag")
+logger = logging.getLogger("mcp-server.rag")
 
 _es_client: AsyncElasticsearch | None = None
 _es_client_lock = asyncio.Lock()
@@ -185,11 +195,20 @@ async def rag_search(query: str, top_k: int | None = None) -> list[dict]:
         raise
 
 
-async def medical_rag_search(query: str, top_k: int = 3) -> str:
+@mcp.tool(
+    # 声明只读：AgentScope 等消费方据此自动放行，不弹人工确认（无注解默认按需确认处理）
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
+async def medical_rag_search(
+    query: Annotated[str, Field(description="检索词，请使用中文（通用英文缩写可保留）")],
+    top_k: Annotated[int, Field(description="返回的文献条数", ge=1, le=10)] = 3,
+) -> str:
     """检索本地医学文献库（稠密+BM25 混合召回并经重排精选；语料以中文医学文献为主，检索词请使用中文，通用英文缩写可保留）。当用户询问医学或健康相关问题（疾病、症状、诊断、治疗、药物、临床研究等）时调用本工具，获取文献依据后再回答。非医学问题不要调用。"""
+    logger.info("节点[医学检索开始] query=%r top_k=%s", query[:120], top_k)
     try:
         hits = await rag_search(query, top_k)
     except Exception as exc:
+        logger.exception("节点[医学检索失败] query=%r", query[:120])
         return f"医学文献检索失败：{exc}"
     if not hits:
         return "未在医学文献库中找到相关文献。请基于你自己的知识回答，并说明未找到文献支持。"

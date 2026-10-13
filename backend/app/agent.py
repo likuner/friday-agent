@@ -14,10 +14,10 @@ from agentscope.mcp import HttpMCPConfig, MCPClient
 from agentscope.message import AssistantMsg, Base64Source, DataBlock, Msg, TextBlock, UserMsg
 from agentscope.middleware import TracingMiddleware
 from agentscope.model import DeepSeekChatModel
-from agentscope.permission import PermissionBehavior, PermissionDecision, PermissionMode
+from agentscope.permission import PermissionMode
 from agentscope.skill import LocalSkillLoader
 from agentscope.state import AgentState
-from agentscope.tool import FunctionTool, ToolBase, Toolkit
+from agentscope.tool import ToolBase, Toolkit
 
 from .agent_logging import AgentLoggingMiddleware
 from .agent_tools import apply_session_rules, build_builtin_tools, resolve_workspace
@@ -25,7 +25,6 @@ from .config import settings
 from .confirm import AskAnswer, PendingAsk, confirm_hub
 from .files import resolve_stored_image
 from .prompts import AGENT_TOOLS_PROMPT, AGENT_TOOLS_PROMPT_HOST, SYSTEM_PROMPT, WEB_SEARCH_PROMPT
-from .rag import medical_rag_search
 
 logger = logging.getLogger("friday.agent")
 
@@ -100,14 +99,14 @@ def _replay_msgs(replay: list[dict[str, str]]) -> list[Msg]:
     ]
 
 
-def _search_mcp_client() -> MCPClient:
-    """联网搜索的 MCP 客户端（mcp-server，streamable-http）。
+def _mcp_client(enable_tools: list[str]) -> MCPClient:
+    """公共工具的 MCP 客户端（mcp-server，streamable-http）。
 
     is_stateful=False：每次调用临时建 HTTP 会话，无需 connect/close，
     mcp-server 重启也不影响后续请求；工具只读已在服务端以 readOnlyHint
     声明（自动放行）。enable_tools 白名单注册，mcp-server 未来新增工具
     不会自动灌给模型。服务端不可达时 Toolkit 仅告警并跳过，对话退化为
-    未开联网搜索，不会报错中断。
+    无医学检索/联网搜索工具，不会报错中断。
     """
     return MCPClient(
         name="common_tools",
@@ -119,10 +118,11 @@ def _search_mcp_client() -> MCPClient:
                 if settings.mcp_auth_token
                 else None
             ),
-            # 需覆盖 mcp-server 内 GLM 检索的 60s httpx 超时再留余量
+            # 需覆盖 mcp-server 内检索链路的 60s httpx 超时（GLM 联网检索、
+            # RAG 的 embedding/rerank 各 30s）再留余量
             timeout=90,
         ),
-        enable_tools=["web_search"],
+        enable_tools=enable_tools,
     )
 
 
@@ -166,20 +166,12 @@ class AgentService:
         agent_tools_prompt: str = "",
         mcps: list[MCPClient] | None = None,
     ) -> Agent:
-        # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写
-        tools = [
-            FunctionTool(
-                medical_rag_search,
-                name="medical_rag_search",
-                # 只读检索，允许模型自主执行，避免权限引擎挂起等待人工确认
-                permission=PermissionDecision(
-                    behavior=PermissionBehavior.ALLOW,
-                    message="只读文献检索，自动允许",
-                ),
-            ),
-        ]
-        # 内置工具（Bash/文件/任务）：与 FunctionTool 混排注册，权限由 AgentState 的
-        # DONT_ASK 上下文裁决（工作区内写入放行、敏感路径 deny、其余拒绝）
+        # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写。
+        # 医学检索（medical_rag_search）与联网搜索（web_search）都经 MCP 注册，
+        # 服务端 readOnlyHint 声明只读自动放行；内置工具（Bash/文件/任务）在此
+        # 混排注册，权限由 AgentState 的 DONT_ASK 上下文裁决（工作区内写入放行、
+        # 敏感路径 deny、其余拒绝）
+        tools: list[ToolBase] = []
         if builtin_tools:
             tools.extend(builtin_tools)
         return Agent(
@@ -222,9 +214,11 @@ class AgentService:
         user_id: UUID | None = None,
     ) -> AsyncIterator[dict[str, str]]:
         use_thinking = deep_thinking and bool(settings.openai_thinking_model)
-        # 联网搜索转交 mcp-server 执行；URL 未配置时降级为提示词引导
+        # 医学检索（medical_rag_search）已迁至 mcp-server：URL 配置即挂载；
+        # web_search 仍按请求开关拼进白名单，URL 未配置时降级为提示词引导
         # （服务端临时不可达由 Toolkit 列工具时静默跳过，不影响对话）
-        use_search = web_search and bool(settings.mcp_server_url)
+        use_mcp = bool(settings.mcp_server_url)
+        use_search = web_search and use_mcp
         # 内置工具受服务端总开关约束（安全边界见 agent_tools.py 模块说明）
         use_agent_tools = agent_tools and settings.agent_tools_enabled
         builtin_tools = None
@@ -253,10 +247,12 @@ class AgentService:
                     public_prefix=f"/api/workspaces/{conversation_id}",
                 )
             # MCP 客户端实例化后先探测一次可用工具并落日志：Toolkit 对列工具失败
-            # 只静默跳过，这条日志是排查「mcp-server 未启动导致联网搜索悄悄消失」的主线索
+            # 只静默跳过，这条日志是排查「mcp-server 未启动导致检索工具悄悄消失」的主线索
             mcps: list[MCPClient] | None = None
-            if use_search:
-                mcp_client = _search_mcp_client()
+            if use_mcp:
+                mcp_client = _mcp_client(
+                    ["medical_rag_search"] + (["web_search"] if web_search else [])
+                )
                 try:
                     mcp_tool_names = [tool.name for tool in await mcp_client.list_tools()]
                     logger.info(
@@ -265,7 +261,7 @@ class AgentService:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "节点[MCP工具注册失败] server=%s error=%s（本轮对话无联网搜索工具，继续）",
+                        "节点[MCP工具注册失败] server=%s error=%s（本轮对话无医学检索/联网搜索工具，继续）",
                         settings.mcp_server_url, exc,
                     )
                 mcps = [mcp_client]

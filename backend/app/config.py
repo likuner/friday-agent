@@ -20,16 +20,12 @@ class Settings(BaseSettings):
     openai_model: str = "deepseek-v4-pro"
     # 深度思考模式使用的模型（需支持 reasoning，V4 系列均原生支持）；留空则退化为提示词引导
     openai_thinking_model: str = "deepseek-v4-pro"
-    # RAG（医学文献混合检索：ES 稠密 knn + BM25/IK 稀疏 → RRF 融合 top N → rerank-2 精排）
+    # GLM 直连（长期记忆抽取 / 滚动摘要用）
     zhipu_api_key: str = ""
-    embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    embedding_model: str = "embedding-3"
-    embedding_dimensions: int = 1024
-    rerank_model: str = "rerank"
-    # GLM 直连（长期记忆抽取 / 滚动摘要用，复用 zhipu_api_key）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-5.3-flash"
-    # 联网搜索：转交 mcp-server（streamable-http）执行，检索逻辑与密钥都在 mcp-server 侧；
+    # 医学文献检索（medical_rag_search）与联网搜索均转交 mcp-server 执行，
+    # ES/embedding/rerank 配置与检索逻辑都在 mcp-server 侧（见 mcp-server/.env）；
     # mcp_auth_token 与 mcp-server/.env 的 MCP_AUTH_TOKEN 保持一致，服务端未配鉴权则留空
     mcp_server_url: str = "http://127.0.0.1:8806/mcp"
     mcp_auth_token: str = ""
@@ -58,21 +54,6 @@ class Settings(BaseSettings):
     # 权限确认（ASK）超时秒数：DEFAULT/ACCEPT_EDITS 模式下前端确认卡片无人应答，
     # 超时后按「拒绝」续跑（模型收到 denied 结果继续生成），不会悬挂请求。
     permission_confirm_timeout_seconds: int = 120
-    # 本地 Elasticsearch（med-es 容器，已开 TLS + basic auth；自签证书默认不校验）
-    es_url: str = "https://localhost:9200"
-    es_username: str = "elastic"
-    es_password: str = ""
-    es_verify_certs: bool = False
-    es_index: str = "medical_chunks"
-    # 旧 pgvector 库（原始语料所在，运行时不再使用，仅作参考/对比）
-    medrag_db_url: str = "postgresql://meduser:medpass@localhost:5433/medrag"
-    # 单路召回深度（knn k 与 BM25 size）：应大于融合窗口，避免单路第 N+1 名之后的好文档出局
-    rag_recall_k: int = 20
-    # RRF 融合候选数（rerank 前的候选池大小）与 rerank 后最终保留条数
-    rag_candidate_k: int = 10
-    rag_top_k: int = 3
-    # rerank 相关性分数阈值（rerank-2 的 relevance_score，0~1）
-    rag_min_score: float = 0.0
     # 可观测：OpenTelemetry 追踪（可接入 AgentScope Studio / Jaeger / Langfuse 等 OTLP 后端）
     tracing_enabled: bool = False
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"

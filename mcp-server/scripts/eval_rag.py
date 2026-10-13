@@ -17,10 +17,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.rag import close_es_client, rag_search  # noqa: E402
-from app.logging_config import setup_logging  # noqa: E402
+from app.tools.rag_search import close_es_client, rag_search  # noqa: E402
 
-logger = logging.getLogger("friday.eval_rag")
+logger = logging.getLogger("mcp-server.eval_rag")
+
+
+def setup_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+
 
 # golden 评测集：query + 期望命中的文献标题关键词（不区分大小写；语料为中文医学文献，
 # 关键词需与实际标题匹配，否则永远 MISS——旧英文关键词集针对英文标题语料，已换）
@@ -121,7 +129,7 @@ async def main() -> None:
     print(f"Hit@{TOP_K}: {summary['hit_rate']}  MRR: {summary['mrr']}  平均Top分: {summary['avg_top_score']}")
     if not summary["judge_enabled"]:
         print("（LLM 裁判未启用：未配置 EVAL_JUDGE_API_KEY，已跳过相关性评分）")
-    # 报告与全部运行日志统一放仓库根 logs/（scripts → backend → 仓库根）
+    # 报告与全部运行日志统一放仓库根 logs/（scripts → mcp-server → 仓库根）
     out = Path(__file__).resolve().parents[2] / "logs" / "eval_rag.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

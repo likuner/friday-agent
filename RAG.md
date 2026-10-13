@@ -1,7 +1,9 @@
 # Friday Agent RAG 检索：Elasticsearch 混合检索实现文档
 
-> 本文描述**当前已上线**的医学文献检索实现（核对基准：2026-09-29，基于 backend 代码、
-> Elasticsearch 9.5.4 与智谱开放平台接口实测）。实现集中于 `backend/app/rag.py`，
+> 本文描述**当前已上线**的医学文献检索实现（核对基准：2026-09-29，基于代码、
+> Elasticsearch 9.5.4 与智谱开放平台接口实测；2026-10 起实现迁移至 mcp-server）。
+> 实现集中于 `mcp-server/app/tools/rag_search.py`（backend 经 MCP 客户端注册为
+> `medical_rag_search` 工具），
 > 架构定位与全链路日志在 `backend/ARCHITECTURE.md` §5 有摘要版，本文是完整展开。
 >
 > 核心链路：**查询向量化 → 稠密 knn + BM25(IK) 双路召回 → RRF 融合取 top10 → rerank 精排取 top3**。
@@ -180,7 +182,7 @@ logger 为 `friday.rag`，输出两路：控制台 INFO + `backend/logs/backend.
 
 ## 七、评测
 
-`backend/scripts/eval_rag.py`：golden 查询 → `rag_search` → 按标题关键词判 Hit@K / MRR。
+`mcp-server/scripts/eval_rag.py`：golden 查询 → `rag_search` → 按标题关键词判 Hit@K / MRR。
 
 - **金标设计原则**：expect 关键词必须与语料实际标题（中文）匹配——旧英文关键词集
   （"opioid"/"parkinson"）对中文标题语料永远 MISS，属假阴性；且语料中本无糖尿病、
@@ -188,7 +190,7 @@ logger 为 `friday.rag`，输出两路：控制台 INFO + `backend/logs/backend.
 - 当前用例 9 条（8 中文 + 1 英文跨语言探测 "measles vaccination"）；
 - 当前结果：**Hit@4 = 1.0，MRR = 0.944**；
 - 可选 LLM 裁判：配置 `EVAL_JUDGE_API_KEY` 后对每条命中做 0-2 相关性打分；
-- 报告落盘 `backend/logs/eval_rag.json`。
+- 报告落盘仓库根 `logs/eval_rag.json`。
 
 ---
 

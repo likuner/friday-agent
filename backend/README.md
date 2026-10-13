@@ -85,10 +85,11 @@ API 文档：<http://localhost:8000/docs>
 
 ## 医学 RAG
 
-`app/agent.py` 的系统提示词要求 Agent 对医疗/医学/健康类问题先调用 `medical_rag_search`
-检索本地医学文献库（Elasticsearch 混合检索：稠密+BM25 RRF 融合 → rerank 精排），
-再结合检索结果作答并注明来源；非医学问题不调用该工具。
-工具实现见 `app/rag.py`（本地 Elasticsearch 混合检索 + 智谱 embedding-3 向量化与 rerank 精排），
+`app/agent.py` 把 `medical_rag_search` 经 MCP 客户端从 mcp-server 注册进来（与 `web_search`
+同链路），系统提示词要求 Agent 对医疗/医学/健康类问题先检索本地医学文献库
+（Elasticsearch 混合检索：稠密+BM25 RRF 融合 → rerank 精排），再结合检索结果作答并注明来源；
+非医学问题不调用该工具。
+检索实现与 ES/embedding/rerank 配置都在 mcp-server 侧（`mcp-server/app/tools/rag_search.py`），
 完整流程说明见根目录 [`RAG.md`](../RAG.md)。
 
 ## 检查

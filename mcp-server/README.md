@@ -1,21 +1,22 @@
 # mcp-server：通用公共工具 MCP 服务
 
-基于 [FastMCP](https://gofastmcp.com) 的**无状态**通用工具服务：不绑定任何单一工具，所有公共工具集中在 `app/tools/` 下按模块实现并自动注册，供 agent Python 后端（http）与本地 MCP 客户端（stdio）复用。首个工具为 `web_search`——转交智谱 GLM 内置联网检索执行。
+基于 [FastMCP](https://gofastmcp.com) 的**无状态**通用工具服务：不绑定任何单一工具，所有公共工具集中在 `app/tools/` 下按模块实现并自动注册，供 agent Python 后端（http）与本地 MCP 客户端（stdio）复用。现有工具：`web_search`（智谱 GLM 内置联网检索）、`medical_rag_search`（医学文献混合检索：本地 ES 双路召回 + rerank 精排）。
 
 ## 目录结构
 
 ```
 mcp-server/
-├── requirements.txt        # fastmcp / httpx / pydantic-settings
+├── requirements.txt        # fastmcp / httpx / pydantic-settings / elasticsearch
 ├── .env.example            # 配置模板（复制为 .env 使用）
-├── scripts/smoke_test.py   # 冒烟测试（工具列表、真实搜索、http 鉴权正反用例）
+├── scripts/smoke_test.py   # 冒烟测试（工具列表、真实调用、http 鉴权正反用例）
 └── app/
     ├── config.py           # 配置（.env 锚定本目录，不随 CWD 漂移）
     ├── auth.py             # http 模式 Bearer 鉴权（独立静态 token）
     ├── server.py           # FastMCP 实例组装（name / instructions / auth）
     ├── main.py             # 入口：stderr 日志 + 按配置选传输运行
     └── tools/              # 公共工具目录（自动注册）
-        └── web_search.py   # 联网搜索（GLM 联网检索）
+        ├── web_search.py   # 联网搜索（GLM 联网检索）
+        └── rag_search.py   # 医学文献混合检索（ES knn+BM25/RRF → rerank）
 ```
 
 ## 快速开始
@@ -127,10 +128,19 @@ async def my_tool(query: Annotated[str, Field(description="参数说明")]) -> s
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `ZHIPU_API_KEY` | 空 | 智谱开放平台密钥，`web_search` 依赖；未配置时工具返回可读提示 |
+| `ZHIPU_API_KEY` | 空 | 智谱开放平台密钥，`web_search` / `medical_rag_search` 依赖；未配置时工具返回可读提示 |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 智谱 API 地址 |
 | `GLM_MODEL` | `glm-5.3-flash` | 执行联网检索的模型 |
 | `GLM_SEARCH_ENGINE` | `search_std` | 搜索引擎（`search_std` 0.01元/次 / `search_pro` 0.03元/次） |
+| `ES_URL` | `https://localhost:9200` | 本地 Elasticsearch 地址（med-es 容器），`medical_rag_search` 依赖 |
+| `ES_USERNAME` | `elastic` | ES basic auth 用户名 |
+| `ES_PASSWORD` | 空 | ES basic auth 密码 |
+| `ES_VERIFY_CERTS` | `false` | 自签证书默认不校验 |
+| `ES_INDEX` | `medical_chunks` | 医学文献 chunk 索引名 |
+| `RAG_RECALL_K` | `20` | 单路召回深度（knn k 与 BM25 size） |
+| `RAG_CANDIDATE_K` | `10` | RRF 融合候选数（rerank 前候选池大小） |
+| `RAG_TOP_K` | `3` | rerank 后最终保留条数 |
+| `RAG_MIN_SCORE` | `0.0` | rerank 相关性分数阈值（0~1） |
 | `MCP_TRANSPORT` | `stdio` | `stdio` / `http` |
 | `MCP_HOST` | `127.0.0.1` | 仅 http 模式生效；外网部署前必读上方检查清单 |
 | `MCP_PORT` | `8806` | 仅 http 模式生效 |

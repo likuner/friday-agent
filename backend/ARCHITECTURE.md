@@ -27,11 +27,10 @@
 ```
 backend/
 ├── .env                        # 环境变量（密钥、模型、数据库连接，不入库）
-├── requirements.txt            # 依赖清单（fastapi/agentscope/asyncpg/elasticsearch 生态）
+├── requirements.txt            # 依赖清单（fastapi/agentscope/asyncpg 生态）
 ├── logs/                       # 运行日志与评测报告（backend.log / eval_*.json）
 ├── files/                      # 上传图片存储目录（/files 静态服务根）
 ├── scripts/
-│   ├── eval_rag.py             # RAG 检索评测：Hit@K / MRR / 平均分 + LLM 裁判位
 │   ├── eval_agent.py           # Agent 行为评测：工具决策断言 + ConsoleRenderer 可视化
 │   └── cleanup_files.py        # 孤儿附件文件清理（按"是否被消息引用"判断）
 └── app/
@@ -51,9 +50,9 @@ backend/
     ├── agent_logging.py        # AgentLoggingMiddleware：Agent 执行段节点日志（模型/工具/耗时/token，挂载于 Agent）
     ├── agent_tools.py          # 内置工具注册与权限边界：工具清单 + 权限上下文 + deny 规则
     ├── workspace_picker.py     # 会话工作区：系统原生目录选择框（osascript/zenity）+ 路径校验
-    ├── rag.py                  # 医学文献混合检索：ES 稠密+BM25/RRF 融合 + 智谱 rerank（核心）
-    ├── websearch.py            # 联网搜索：web_search 工具转交 GLM 内置联网检索执行（复用 zhipu_api_key）
     └── files.py                # 图片上传/解析：内容嗅探校验 + UUID 落盘 + 静态服务
+    # 医学检索（medical_rag_search）与联网搜索（web_search）均为 MCP 工具，
+    # 实现见 mcp-server/app/tools/（rag_search.py / web_search.py），agent.py 经 MCPClient 注册
 ├── workspaces/                    # Agent 内置工具的会话工作区（/workspaces/<会话id>/ 静态服务，运行时生成）
 ```
 
@@ -161,11 +160,11 @@ backend/
   「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-pro）时切换到
   带 `thinking_enable=True` 的 reasoning Agent——思考过程以独立 `THINKING_BLOCK_DELTA`
   事件流出，前端折叠展示；未配置 thinking 模型则退化为提示词引导；
-- **联网搜索工具**：「联网搜索」打开且配置了 `ZHIPU_API_KEY` 时，`web_search` FunctionTool
-  （app/websearch.py）随组合注册，系统提示词追加时效性检索指令；主模型 tool_call 触发后，
-  工具内部调用 GLM `chat/completions` + 内置 `web_search` 工具（`glm-5.3-flash` + `search_std`
-  引擎），把「GLM 检索摘要 + 原始网页结果（标题/链接/摘要/发布时间）」回填给主模型引用作答；
-  未配置密钥时降级为提示词引导（模型会说明无法联网）；
+- **MCP 工具**（mcp-server，streamable-http）：`medical_rag_search`（医学文献混合检索）
+  在 `MCP_SERVER_URL` 配置时恒注册；「联网搜索」打开时追加 `web_search`（转交 GLM 内置联网
+  检索：`glm-5.3-flash` + `search_std` 引擎，返回检索摘要 + 原始网页结果供主模型引用作答），
+  系统提示词同步追加时效性检索指令；两者均经 `enable_tools` 白名单注册、服务端 `readOnlyHint`
+  声明只读自动放行，mcp-server 不可达时 Toolkit 静默跳过（联网搜索降级为提示词引导）；
 - **多模态消息**（`_user_message()`）：图片附件读文件 → base64 → `DataBlock(Base64Source)`，
   经 `OpenAIChatFormatter` 转成 OpenAI 兼容 `image_url`（AgentScope 自带的
   `DeepSeekChatFormatter` 会跳过 DataBlock，故显式替换 formatter）；
@@ -220,11 +219,11 @@ backend/
 
 > 完整展开（分步详解 / 索引契约 / 日志字段 / 运维排障 / 评测）见根目录 [`RAG.md`](../RAG.md)，本节保留架构摘要。
 
-### 5.1 检索链路（app/rag.py，Elasticsearch 混合检索）
+### 5.1 检索链路（mcp-server/app/tools/rag_search.py，backend 经 MCP 注册）
 
 ```
 模型层    Agent（ReAct 循环）── 决定是否调用、生成检索词、消费检索结果
-             │  FunctionTool 包装（toolkit 注册，权限 ALLOW）
+             │  MCP 工具注册（mcp__common_tools__medical_rag_search，readOnlyHint 自动放行）
 工具层    medical_rag_search(query, top_k=3) → str
              │  容错：检索失败返回错误说明而非抛异常（不让工具炸掉 Agent 循环）
              │  空结果：明确提示"未找到文献"，要求模型声明后基于自身知识回答
@@ -255,10 +254,10 @@ backend/
    按 `results[].relevance_score` 降序取前 top_k（实测能把 RRF 第 8~10 名的正确文档
    精准提进前 3）；调用失败自动降级为 RRF 序并打告警日志，检索不中断；
 5. **过滤与阈值**：`rag_min_score` 现作用于 rerank 分数（0~1），默认 0.0 全保留；
-6. **工具 schema 即函数签名**：`FunctionTool` 从 `medical_rag_search` 的签名与 docstring
+6. **工具 schema 即函数签名**：MCP 工具从 `medical_rag_search` 的签名与 docstring
    自动提取 JSON Schema 给模型；docstring 同时承担「何时该调用」的指令；
-7. **权限显式放行**：`PermissionDecision(behavior=ALLOW)`——AgentScope 权限引擎默认要求
-   人工确认工具执行，无头 SSE 场景必须显式允许，否则事件流停在 `REQUIRE_USER_CONFIRM`；
+7. **权限自动放行**：工具在 mcp-server 侧以 `readOnlyHint=True` 注解声明只读，
+   AgentScope 权限引擎据此自动放行，无头 SSE 场景不会停在 `REQUIRE_USER_CONFIRM`；
 8. **检索是 Agentic 的**：日志里的 query 是模型改写提炼的中文关键词，不是用户原话
    （关键词化可提高两路召回命中）；系统提示词（prompts.py）明确允许"必要时从多个角度
    多次调用"，因此一次用户提问常出现多条检索日志（如"病名+症状""病名+治疗"各查一次），
@@ -287,7 +286,7 @@ backend/
 
 ### 5.5 评测与已知问题
 
-- `scripts/eval_rag.py`：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@4=1.0、MRR=0.944
+- `mcp-server/scripts/eval_rag.py`：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@4=1.0、MRR=0.944
   （rerank 后全命中；旧英文关键词金标针对英文标题语料，已按中文语料重写）；
 - rerank 分数普遍接近 1.0，区分度有限，`top_score` 指标参考意义下降；
 - 语料 embedding 是否与 embedding-3 同源仍存疑（历史失配问题），当前由 BM25 路 +
@@ -348,7 +347,7 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 
 | 脚本 | 用途 | 备注 |
 | --- | --- | --- |
-| `scripts/eval_rag.py` | RAG 检索评测：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@K / MRR / 平均 Top 分 | LLM 裁判需 `EVAL_JUDGE_API_KEY`（留空自动跳过）；报告 `logs/eval_rag.json` |
+| `mcp-server/scripts/eval_rag.py` | RAG 检索评测：9 条 golden 查询（8 中文 + 1 英文跨语言），Hit@K / MRR / 平均 Top 分 | LLM 裁判需 `EVAL_JUDGE_API_KEY`（留空自动跳过）；报告 `logs/eval_rag.json`（随脚本迁至 mcp-server） |
 | `scripts/eval_agent.py` | Agent 行为评测：医学问题应触发工具 / 非医学不应触发；agentscope `ConsoleRenderer` 可视化运行轨迹 | 实测 3/3 通过；报告 `logs/eval_agent.json` |
 | `scripts/cleanup_files.py` | 孤儿附件清理（按引用判断，只预览可确认） | 见 ISSUES.md P1 附件管理 |
 
