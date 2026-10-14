@@ -71,6 +71,37 @@ curl http://localhost:8000/health
 
 API 文档：<http://localhost:8000/docs>
 
+## 用 PyCharm 断点调试
+
+断点只对**由 PyCharm 以 Debug 方式启动**的进程生效。若后端是 `./start.sh` 拉起的
+（nohup uvicorn 常驻），Apifox / 前端的请求进的是那个进程，PyCharm 断点不会命中。
+调试前先停掉常驻后端，其余服务（PostgreSQL / ES / MCP / 前端）保留不动：
+
+```bash
+# 项目根目录执行；--reload 的子进程会随之退出
+kill "$(cat .run/backend.pid)"
+# 确认 8000 已释放（应无输出）
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+然后新建 Run/Debug Configuration（Run → Edit Configurations → ＋ → Python）：
+
+| 配置项 | 值 |
+|---|---|
+| 运行方式 | Module name（不是 Script path）：`uvicorn` |
+| Parameters | `app.main:app --host 0.0.0.0 --port 8000` |
+| Working directory | `backend/`（即 PyCharm 项目根） |
+| Python interpreter | `backend/.venv` |
+
+点 Debug 启动，控制台出现 `Uvicorn running on ...` 后再用 Apifox 或前端请求，断点即可命中。
+
+注意：
+
+- Parameters **不要带 `--reload`**。reload 会派生 multiprocessing 子进程运行应用，
+  调试器挂在父进程上，断点同样不会命中；调试期间改代码后重新点一次 Debug 重启即可。
+- 调试期间跑 `./start.sh` 无害：它检测到 8000 被占用会跳过后端，其余服务照常启动。
+- 调试结束想恢复常驻模式，先停掉 PyCharm 里的运行，再跑一次 `./start.sh`。
+
 ## 主要接口
 
 - `GET /api/auth/captcha`：获取图片验证码
