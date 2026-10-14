@@ -1,30 +1,30 @@
-from collections.abc import AsyncIterator
-from pathlib import Path
+"""AgentService：每轮无状态重建一次性 Agent 的对话编排。
+
+各部件已按职责拆出——组装在 agent_factory，MCP 挂载在 agent_mcps，
+技能加载在 agent_skills，输入消息构造在 agent_messages，事件→SSE 翻译
+在 agent_events；本模块只负责按开关组合把部件串成流式回复
+（含权限确认 park/resume 与演示降级）。
+"""
+
 import asyncio
-import base64
-import json
 import logging
+from collections.abc import AsyncIterator
 from uuid import UUID
 
-from agentscope.agent import Agent
 from agentscope.credential import DeepSeekCredential
 from agentscope.event import ConfirmResult, EventType, RequireUserConfirmEvent, UserConfirmResultEvent
-from agentscope.formatter import OpenAIChatFormatter
-from agentscope.mcp import HttpMCPConfig, MCPClient
-from agentscope.message import AssistantMsg, Base64Source, DataBlock, Msg, TextBlock, UserMsg
-from agentscope.middleware import TracingMiddleware
-from agentscope.model import DeepSeekChatModel
 from agentscope.permission import PermissionMode
-from agentscope.skill import LocalSkillLoader
 from agentscope.state import AgentState
-from agentscope.tool import ToolBase, Toolkit
 
-from .agent_logging import AgentLoggingMiddleware
+from .agent_events import ReplyEventTranslator, tool_query
+from .agent_factory import build_agent
+from .agent_mcps import mcp_client, probe_mcp_tools
+from .agent_messages import replay_msgs, user_message
+from .agent_skills import probe_skills
 from .agent_tools import apply_session_rules, build_builtin_tools, resolve_workspace
 from .config import settings
 from .confirm import AskAnswer, PendingAsk, confirm_hub
-from .files import resolve_stored_image
-from .prompts import AGENT_TOOLS_PROMPT, AGENT_TOOLS_PROMPT_HOST, SYSTEM_PROMPT, WEB_SEARCH_PROMPT
+from .prompts import AGENT_TOOLS_PROMPT, AGENT_TOOLS_PROMPT_HOST
 
 logger = logging.getLogger("friday.agent")
 
@@ -36,105 +36,6 @@ _PERMISSION_MODES: dict[str, PermissionMode] = {
     "explore": PermissionMode.EXPLORE,
     "dont_ask": PermissionMode.DONT_ASK,
 }
-
-
-def _user_message(content: str, attachments: list[str] | None) -> UserMsg:
-    """有图片附件时构造多模态消息：图片读成 base64 直接传给模型。
-
-    DeepSeek 的 OpenAI 兼容接口接受 image_url 形式的 data URI，
-    AgentScope 侧由 OpenAIChatFormatter 负责把 DataBlock 转成该格式。
-    """
-    blocks: list[TextBlock | DataBlock] = []
-    for name in attachments or []:
-        resolved = resolve_stored_image(name)
-        if not resolved:
-            logger.warning("节点[附件跳过] 附件不存在或名称非法 name=%r", name)
-            continue
-        path, media_type = resolved
-        blocks.append(
-            DataBlock(
-                type="data",
-                source=Base64Source(
-                    type="base64",
-                    data=base64.b64encode(path.read_bytes()).decode(),
-                    media_type=media_type,
-                ),
-                name=path.name,
-            )
-        )
-    if not blocks:
-        return UserMsg(name="user", content=content)
-    # 只发图不打字时给模型一个默认指令
-    blocks.insert(0, TextBlock(type="text", text=content or "请描述这张图片。"))
-    logger.info("节点[多模态消息] images=%s text=%r", len(blocks) - 1, (content or "")[:60])
-    return UserMsg(name="user", content=blocks)
-
-
-# chip 摘要的参数键优先级：检索词 → 命令 → 文件路径 → 搜索模式 → 目录 → 任务标题 → 技能名
-_TOOL_QUERY_KEYS = ("query", "command", "file_path", "pattern", "path", "subject", "skill")
-
-
-def _tool_query(raw_args: str) -> str:
-    """从工具调用参数 JSON 里取出展示摘要（检索词/命令/文件路径等），供前端 chip。"""
-    try:
-        payload = json.loads(raw_args) if raw_args else {}
-    except ValueError:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    for key in _TOOL_QUERY_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:40]
-    return ""
-
-
-def _replay_msgs(replay: list[dict[str, str]]) -> list[Msg]:
-    """把库中的回放窗口转成 AgentScope 消息：仅 user/assistant 纯文本（已由 context.py 清洗）。"""
-    return [
-        UserMsg(name="user", content=item["content"])
-        if item["role"] == "user"
-        else AssistantMsg(name="Friday", content=item["content"])
-        for item in replay
-    ]
-
-
-def _mcp_client(enable_tools: list[str]) -> MCPClient:
-    """公共工具的 MCP 客户端（mcp-server，streamable-http）。
-
-    is_stateful=False：每次调用临时建 HTTP 会话，无需 connect/close，
-    mcp-server 重启也不影响后续请求；工具只读已在服务端以 readOnlyHint
-    声明（自动放行）。enable_tools 白名单注册，mcp-server 未来新增工具
-    不会自动灌给模型。服务端不可达时 Toolkit 仅告警并跳过，对话退化为
-    无医学检索/联网搜索工具，不会报错中断。
-    """
-    return MCPClient(
-        name="common_tools",
-        is_stateful=False,
-        mcp_config=HttpMCPConfig(
-            url=settings.mcp_server_url,
-            headers=(
-                {"Authorization": f"Bearer {settings.mcp_auth_token}"}
-                if settings.mcp_auth_token
-                else None
-            ),
-            # 需覆盖 mcp-server 内检索链路的 60s httpx 超时（GLM 联网检索、
-            # RAG 的 embedding/rerank 各 30s）再留余量
-            timeout=90,
-        ),
-        enable_tools=enable_tools,
-    )
-
-
-# Agent 技能目录（AgentScope 原生 skill 机制）：每个子目录一个 SKILL.md。
-# 框架把技能清单（name/description）自动注入 system prompt，模型经只读
-# 元工具 Skill 按需读取全文（渐进式披露，技能内容不再占用每轮提示词）。
-# scan_subdir=True 支持多技能并存；mtime 缓存跨请求共享，目录缺失仅告警
-# 不注入，不影响对话。新增技能=在 skills/ 下加目录，无需改代码。
-_SKILL_LOADER = LocalSkillLoader(
-    directory=str(Path(__file__).resolve().parents[1] / "skills"),
-    scan_subdir=True,
-)
 
 
 class AgentService:
@@ -153,50 +54,6 @@ class AgentService:
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url,
             )
-
-    @staticmethod
-    def _build(
-        credential: DeepSeekCredential,
-        model: str,
-        state: AgentState,
-        thinking: bool = False,
-        web_search: bool = False,
-        memory_block: str | None = None,
-        builtin_tools: list[ToolBase] | None = None,
-        agent_tools_prompt: str = "",
-        mcps: list[MCPClient] | None = None,
-    ) -> Agent:
-        # 每个 Agent 用独立 Toolkit：共享实例可能被 Agent 内部改写。
-        # 医学检索（medical_rag_search）与联网搜索（web_search）都经 MCP 注册，
-        # 服务端 readOnlyHint 声明只读自动放行；内置工具（Bash/文件/任务）在此
-        # 混排注册，权限由 AgentState 的 DONT_ASK 上下文裁决（工作区内写入放行、
-        # 敏感路径 deny、其余拒绝）
-        tools: list[ToolBase] = []
-        if builtin_tools:
-            tools.extend(builtin_tools)
-        return Agent(
-            name="Friday",
-            # 长期记忆块（用户画像/事实条目，自带标注头）插在人设指令之后；
-            # 其标注已声明"与最近对话冲突时以最近对话为准"，与会话上下文指令衔接
-            system_prompt=SYSTEM_PROMPT
-            + (f"\n\n{memory_block}" if memory_block else "")
-            + (f"\n\n{WEB_SEARCH_PROMPT}" if web_search else "")
-            + (f"\n\n{agent_tools_prompt}" if agent_tools_prompt else ""),
-            # Tracing 未配置时自动短路；日志中间件产出执行段节点日志（模型/工具/耗时/token）
-            middlewares=[TracingMiddleware(), AgentLoggingMiddleware()],
-            # 每轮一次性状态：session_id 绑定会话，summary 承载滚动摘要
-            state=state,
-            model=DeepSeekChatModel(
-                credential=credential,
-                model=model,
-                parameters=DeepSeekChatModel.Parameters(thinking_enable=True) if thinking else None,
-                stream=True,
-                # DeepSeekChatFormatter 会跳过 DataBlock（图片），换成 OpenAI 兼容 formatter；
-                # DeepSeek 接口本身兼容，纯文本/工具调用路径实测同样正常。
-                formatter=OpenAIChatFormatter(),
-            ),
-            toolkit=Toolkit(tools=tools, mcps=mcps, skills_or_loaders=[_SKILL_LOADER]),
-        )
 
     async def stream(
         self,
@@ -246,32 +103,17 @@ class AgentService:
                     # 产出文件下载走鉴权路由（前端会拦截该前缀链接做带 token 下载）
                     public_prefix=f"/api/workspaces/{conversation_id}",
                 )
-            # MCP 客户端实例化后先探测一次可用工具并落日志：Toolkit 对列工具失败
-            # 只静默跳过，这条日志是排查「mcp-server 未启动导致检索工具悄悄消失」的主线索
-            mcps: list[MCPClient] | None = None
+            # MCP 工具探测与注册日志见 agent_mcps.probe_mcp_tools（失败仅告警，client 照常挂载）
+            mcps = None
             if use_mcp:
-                mcp_client = _mcp_client(
-                    ["medical_rag_search"] + (["web_search"] if web_search else [])
-                )
-                try:
-                    mcp_tool_names = [tool.name for tool in await mcp_client.list_tools()]
-                    logger.info(
-                        "节点[MCP工具注册] server=%s tools=%s",
-                        settings.mcp_server_url, mcp_tool_names,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "节点[MCP工具注册失败] server=%s error=%s（本轮对话无医学检索/联网搜索工具，继续）",
-                        settings.mcp_server_url, exc,
-                    )
-                mcps = [mcp_client]
-            # 技能注册探测：Toolkit 对扫不到的目录只静默告警，这条日志是排查
-            # 「skills/ 路径配错导致技能悄悄消失」的主线索（loader 内部不抛异常）
-            skill_names = [skill.name for skill in await _SKILL_LOADER.list_skills()]
-            logger.info("节点[Skill注册] dir=%s skills=%s", _SKILL_LOADER.directory, skill_names)
+                client = mcp_client(["medical_rag_search"] + (["web_search"] if web_search else []))
+                await probe_mcp_tools(client)
+                mcps = [client]
+            # 技能注册探测与日志见 agent_skills.probe_skills
+            await probe_skills()
             # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
             state = AgentState(**state_kwargs)  # type: ignore[arg-type]
-            agent = self._build(
+            agent = build_agent(
                 self._credential, model, state,
                 thinking=use_thinking, web_search=use_search, memory_block=memory_block,
                 builtin_tools=builtin_tools, agent_tools_prompt=agent_tools_prompt,
@@ -290,12 +132,9 @@ class AgentService:
             )
             # 历史先回放（纯文本），本轮消息（含图片）再作为输入：附件预算只留给本轮
             if replay:
-                await agent.observe(_replay_msgs(replay))
-            tool_args: dict[str, str] = {}
-            tool_names: dict[str, str] = {}
-            # 已下发过 chip 的工具调用（确认续跑后不重复发）
-            announced: set[str] = set()
-            inputs: object = _user_message(user_content, attachments)
+                await agent.observe(replay_msgs(replay))
+            translator = ReplyEventTranslator()
+            inputs: object = user_message(user_content, attachments)
             while True:
                 parked: RequireUserConfirmEvent | None = None
                 async for event in agent.reply_stream(inputs):
@@ -304,27 +143,9 @@ class AgentService:
                         # 推给前端确认后以 UserConfirmResultEvent 续跑同一个 Agent
                         parked = event
                         continue
-                    if event.type == EventType.TEXT_BLOCK_DELTA:
-                        yield {"type": "text", "content": event.delta}
-                    elif event.type == EventType.THINKING_BLOCK_DELTA:
-                        yield {"type": "thinking", "content": event.delta}
-                    elif event.type == EventType.TOOL_CALL_START:
-                        tool_args[event.tool_call_id] = ""
-                        tool_names[event.tool_call_id] = event.tool_call_name
-                    elif event.type == EventType.TOOL_CALL_DELTA:
-                        tool_args[event.tool_call_id] = tool_args.get(event.tool_call_id, "") + event.delta
-                    elif event.type == EventType.TOOL_CALL_END:
-                        if event.tool_call_id in announced:
-                            continue
-                        announced.add(event.tool_call_id)
-                        raw_args = tool_args.get(event.tool_call_id, "")
-                        # 参数到 END 才收全：把工具名和检索词一起下发，前端 chip 显示检索词，
-                        # 多次并行检索（多角度）就不会看起来像重复的同一个 chip。
-                        yield {
-                            "type": "tool_call",
-                            "name": tool_names.get(event.tool_call_id, ""),
-                            "query": _tool_query(raw_args),
-                        }
+                    sse_event = translator.feed(event)
+                    if sse_event:
+                        yield sse_event
                 if parked is None:
                     break
                 # ---- 权限确认：推给前端 → 等确认接口应答（超时自动拒绝）→ 续跑 ----
@@ -333,7 +154,7 @@ class AgentService:
                     user_id=user_id or UUID(int=0),
                     reply_id=parked.reply_id,
                     calls=[
-                        {"id": call.id, "name": call.name, "query": _tool_query(call.input)}
+                        {"id": call.id, "name": call.name, "query": tool_query(call.input)}
                         for call in parked.tool_calls
                     ],
                 )
@@ -369,8 +190,8 @@ class AgentService:
                         for call in parked.tool_calls
                     ],
                 )
-            # 执行段节点日志（模型调用/工具调用·参数·结果/耗时/token）由
-            # AgentLoggingMiddleware 在中间件钩子里记，此处只做事件 → SSE 翻译
+            # 执行段节点日志（模型/工具/耗时/token）由 AgentLoggingMiddleware 记，
+            # 事件→SSE 翻译在 ReplyEventTranslator，此处只做编排
             return
 
         logger.warning("节点[演示模式] 未配置模型密钥，返回本地演示流式回复 prompt=%r", content[:100])

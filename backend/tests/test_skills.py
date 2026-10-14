@@ -8,13 +8,13 @@ from pathlib import Path
 from agentscope.skill import LocalSkillLoader
 from agentscope.tool import Toolkit
 
-from app.agent import _SKILL_LOADER
+from app.agent_skills import SKILL_LOADER
 
 MEDICAL = "medical-literature-search"
 
 
 def load_skills() -> dict[str, object]:
-    return {skill.name: skill for skill in asyncio.run(_SKILL_LOADER.list_skills())}
+    return {skill.name: skill for skill in asyncio.run(SKILL_LOADER.list_skills())}
 
 
 class TestSkillLoading:
@@ -39,7 +39,7 @@ class TestSkillLoading:
 class TestToolkitIntegration:
     def test_skill_viewer_and_instructions(self):
         async def scenario():
-            toolkit = Toolkit(skills_or_loaders=[_SKILL_LOADER])
+            toolkit = Toolkit(skills_or_loaders=[SKILL_LOADER])
             schemas = await toolkit.get_tool_schemas()
             instructions = await toolkit.get_skill_instructions()
             return schemas, instructions
@@ -53,7 +53,7 @@ class TestToolkitIntegration:
         assert MEDICAL in instructions
 
     def test_scan_subdir_finds_nested_skill_md(self, tmp_path):
-        # agent.py 用 scan_subdir=True 支撑「一个技能一个子目录」布局
+        # agent_skills.py 用 scan_subdir=True 支撑「一个技能一个子目录」布局
         (tmp_path / "demo-skill").mkdir()
         (tmp_path / "demo-skill" / "SKILL.md").write_text(
             "---\nname: demo-skill\ndescription: 演示技能\n---\n# 演示",

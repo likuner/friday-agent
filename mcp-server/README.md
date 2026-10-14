@@ -1,6 +1,6 @@
 # mcp-server：通用公共工具 MCP 服务
 
-基于 [FastMCP](https://gofastmcp.com) 的**无状态**通用工具服务：不绑定任何单一工具，所有公共工具集中在 `app/tools/` 下按模块实现并自动注册，供 agent Python 后端（http）与本地 MCP 客户端（stdio）复用。现有工具：`web_search`（智谱 GLM 内置联网检索）、`medical_rag_search`（医学文献混合检索：本地 ES 双路召回 + rerank 精排）。
+基于 [FastMCP](https://gofastmcp.com) 的**无状态**通用工具服务：不绑定任何单一工具，所有公共工具集中在 `app/tools/` 下按模块实现并自动注册，供 agent Python 后端（http）与本地 MCP 客户端（stdio）复用。现有工具：`web_search`（智谱独立搜索 API）、`medical_rag_search`（医学文献混合检索：本地 ES 双路召回 + rerank 精排）。
 
 ## 目录结构
 
@@ -15,7 +15,7 @@ mcp-server/
     ├── server.py           # FastMCP 实例组装（name / instructions / auth）
     ├── main.py             # 入口：stderr 日志 + 按配置选传输运行
     └── tools/              # 公共工具目录（自动注册）
-        ├── web_search.py   # 联网搜索（GLM 联网检索）
+        ├── web_search.py   # 联网搜索（智谱独立搜索 API）
         └── rag_search.py   # 医学文献混合检索（ES knn+BM25/RRF → rerank）
 ```
 
@@ -130,7 +130,6 @@ async def my_tool(query: Annotated[str, Field(description="参数说明")]) -> s
 |---|---|---|
 | `ZHIPU_API_KEY` | 空 | 智谱开放平台密钥，`web_search` / `medical_rag_search` 依赖；未配置时工具返回可读提示 |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 智谱 API 地址 |
-| `GLM_MODEL` | `glm-5.3-flash` | 执行联网检索的模型 |
 | `GLM_SEARCH_ENGINE` | `search_std` | 搜索引擎（`search_std` 0.01元/次 / `search_pro` 0.03元/次） |
 | `ES_URL` | `https://localhost:9200` | 本地 Elasticsearch 地址（med-es 容器），`medical_rag_search` 依赖 |
 | `ES_USERNAME` | `elastic` | ES basic auth 用户名 |

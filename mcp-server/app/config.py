@@ -12,9 +12,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # 智谱开放平台密钥：web_search / rag_search 等工具依赖；未配置时相应工具返回可读提示
     zhipu_api_key: str = ""
-    # GLM 联网检索参数（与 backend 联网搜索同源约定）
+    # 联网搜索参数：直连智谱 /web_search 独立搜索 API（chat/completions 内置联网已失效，见 web_search.py 头注）
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    glm_model: str = "glm-5.3-flash"
     glm_search_engine: str = "search_std"
     # 医学文献混合检索（med-es 容器：ES 稠密 knn + BM25/IK 稀疏 → RRF 融合 → rerank 精排）
     embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"

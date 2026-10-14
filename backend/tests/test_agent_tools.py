@@ -12,7 +12,7 @@ import pytest
 from agentscope.permission import PermissionBehavior, PermissionEngine
 from agentscope.tool import ToolBase
 
-from app.agent import _tool_query
+from app.agent_events import tool_query
 from app.agent_tools import _deny_patterns, apply_session_rules, build_builtin_tools, conversation_workspace_dir
 
 
@@ -163,30 +163,30 @@ class TestPermissionModes:
 
 
 class TestToolQuery:
-    """_tool_query 泛化：各参数键的优先级取值与截断。"""
+    """tool_query 泛化：各参数键的优先级取值与截断。"""
 
     def test_query_key_first(self):
-        assert _tool_query('{"query": "哮喘 治疗"}') == "哮喘 治疗"
+        assert tool_query('{"query": "哮喘 治疗"}') == "哮喘 治疗"
 
     def test_command_key(self):
-        assert _tool_query('{"command": "python gen.py"}') == "python gen.py"
+        assert tool_query('{"command": "python gen.py"}') == "python gen.py"
 
     def test_file_path_key(self):
-        assert _tool_query('{"file_path": "/ws/report.csv"}') == "/ws/report.csv"
+        assert tool_query('{"file_path": "/ws/report.csv"}') == "/ws/report.csv"
 
     def test_subject_key(self):
-        assert _tool_query('{"subject": "整理数据"}') == "整理数据"
+        assert tool_query('{"subject": "整理数据"}') == "整理数据"
 
     def test_priority_query_over_command(self):
-        assert _tool_query('{"command": "ls", "query": "检索词"}') == "检索词"
+        assert tool_query('{"command": "ls", "query": "检索词"}') == "检索词"
 
     def test_non_string_value_skipped(self):
-        assert _tool_query('{"query": 5, "command": "ls"}') == "ls"
+        assert tool_query('{"query": 5, "command": "ls"}') == "ls"
 
     def test_truncated_to_40_chars(self):
-        assert _tool_query('{"command": "%s"}' % ("a" * 100)) == "a" * 40
+        assert tool_query('{"command": "%s"}' % ("a" * 100)) == "a" * 40
 
     def test_invalid_or_empty(self):
-        assert _tool_query("not json") == ""
-        assert _tool_query("") == ""
-        assert _tool_query('[1, 2]') == ""
+        assert tool_query("not json") == ""
+        assert tool_query("") == ""
+        assert tool_query('[1, 2]') == ""

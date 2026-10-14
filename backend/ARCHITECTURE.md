@@ -46,13 +46,18 @@ backend/
     ├── captcha.py              # 图形验证码：Pillow 生成 + HMAC 签名 + 进程内存存储
     ├── conversations.py        # /api/conversations 路由：列表/创建/详情/重命名/删除 + 消息截断（编辑重发）
     ├── chat.py                 # /api/conversations/{id}/messages：SSE 流式对话（核心）
-    ├── agent.py                # AgentService：AgentScope Agent 组装（开关组合懒加载）+ 事件流适配（核心）
+    ├── agent.py                # AgentService：流式编排（开关组合→部件装配→事件循环→权限确认 park/resume）+ 演示降级
+    ├── agent_factory.py        # Agent 组装：提示词拼接 + 中间件 + 模型 + Toolkit（内置工具/MCP/技能混排）
+    ├── agent_mcps.py           # MCP 工具挂载：mcp-server 客户端构造 + 可用性探测日志
+    ├── agent_skills.py         # 技能加载：LocalSkillLoader（skills/ 一技能一子目录）+ 注册探测日志
+    ├── agent_messages.py       # 输入侧消息构造：多模态附件→DataBlock、回放窗口→AgentScope 消息
+    ├── agent_events.py         # 输出侧事件翻译：AgentScope 流事件→SSE dict（tool_query chip 摘要 + 翻译器）
     ├── agent_logging.py        # AgentLoggingMiddleware：Agent 执行段节点日志（模型/工具/耗时/token，挂载于 Agent）
     ├── agent_tools.py          # 内置工具注册与权限边界：工具清单 + 权限上下文 + deny 规则
     ├── workspace_picker.py     # 会话工作区：系统原生目录选择框（osascript/zenity）+ 路径校验
     └── files.py                # 图片上传/解析：内容嗅探校验 + UUID 落盘 + 静态服务
     # 医学检索（medical_rag_search）与联网搜索（web_search）均为 MCP 工具，
-    # 实现见 mcp-server/app/tools/（rag_search.py / web_search.py），agent.py 经 MCPClient 注册
+    # 实现见 mcp-server/app/tools/（rag_search.py / web_search.py），agent_mcps.py 经 MCPClient 注册
 ├── workspaces/                    # Agent 内置工具的会话工作区（/workspaces/<会话id>/ 静态服务，运行时生成）
 ```
 
@@ -133,7 +138,7 @@ backend/
 | `error` | `content` | 服务端异常 | `message.error` 提示 |
 
 > 注意 `tool_call` 事件在 `TOOL_CALL_END` 时才下发：此时参数 JSON 才收全，
-> 能解析出检索词，多次并行多角度检索各自成 chip（agent.py `_tool_query()`）。
+> 能解析出检索词，多次并行多角度检索各自成 chip（agent_events.py `tool_query()`）。
 
 ### 4.3 chat.py 的关键实现点
 
@@ -153,19 +158,21 @@ backend/
 - **消息截断**（conversations.py `DELETE /{id}/messages/{mid}`）：删除指定消息及其后全部
   消息（`created_at >=` 目标），前端「编辑重发」先截断再重发；跨用户访问返回 404。
 
-### 4.4 agent.py 的关键实现点
+### 4.4 agent 相关模块的关键实现点
 
-- **按开关组合装配**（`AgentService._get_agent()`）：以（深度思考, 联网搜索）组合为键懒加载并缓存
-  Agent（各自独立 Toolkit 与对话状态）。普通对话用 `openai_model`（deepseek-v4-pro）；
+- **按开关组合装配**（每轮重建，`agent_factory.build_agent()`）：AgentService 无状态，
+  每轮请求按开关组合现建一次性 Agent（独立 Toolkit 与对话状态，记忆的唯一事实来源是
+  数据库）。普通对话用 `openai_model`（deepseek-v4-pro）；
   「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-pro）时切换到
   带 `thinking_enable=True` 的 reasoning Agent——思考过程以独立 `THINKING_BLOCK_DELTA`
   事件流出，前端折叠展示；未配置 thinking 模型则退化为提示词引导；
-- **MCP 工具**（mcp-server，streamable-http）：`medical_rag_search`（医学文献混合检索）
-  在 `MCP_SERVER_URL` 配置时恒注册；「联网搜索」打开时追加 `web_search`（转交 GLM 内置联网
-  检索：`glm-5.3-flash` + `search_std` 引擎，返回检索摘要 + 原始网页结果供主模型引用作答），
+- **MCP 工具**（mcp-server，streamable-http；`agent_mcps.py`）：`medical_rag_search`（医学文献混合检索）
+  在 `MCP_SERVER_URL` 配置时恒注册；「联网搜索」打开时追加 `web_search`（智谱独立搜索 API：
+  `search_std` 引擎，返回原始网页结果供主模型引用作答；原 GLM 内置联网自 2026-10-13 服务端失效，
+  已弃用），
   系统提示词同步追加时效性检索指令；两者均经 `enable_tools` 白名单注册、服务端 `readOnlyHint`
   声明只读自动放行，mcp-server 不可达时 Toolkit 静默跳过（联网搜索降级为提示词引导）；
-- **多模态消息**（`_user_message()`）：图片附件读文件 → base64 → `DataBlock(Base64Source)`，
+- **多模态消息**（`agent_messages.user_message()`）：图片附件读文件 → base64 → `DataBlock(Base64Source)`，
   经 `OpenAIChatFormatter` 转成 OpenAI 兼容 `image_url`（AgentScope 自带的
   `DeepSeekChatFormatter` 会跳过 DataBlock，故显式替换 formatter）；
   附件名经 `files.py SAFE_NAME` 正则白名单校验，防路径穿越；
@@ -337,7 +344,7 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 | 层 | 实现 | 内容 |
 | --- | --- | --- |
 | 结构化节点日志 | logging_config.py + 各模块 `friday.*` logger；Agent 执行段由 agent_logging.py 的 `AgentLoggingMiddleware` 产出（挂载于 `Agent(middlewares=...)`），服务层/工具内部日志仍在各模块 | 控制台 INFO + 滚动文件 DEBUG；节点清单：接收消息 / 流式开始 / Agent调用 / Agent返回（含轮次·整轮 token 合计·耗时） / 模型调用·返回（含每轮 token 用量·缓存命中） / 工具调用（含参数） / 工具结果（含状态·耗时） / RAG连接 / RAG向量化 / RAG检索开始 / RAG融合完成 / RAG重排（重排异常自动降级 RRF 序）/ RAG检索完成·命中·异常 / 联网搜索开始·完成·命中·异常 / 记忆合并（含合并后全文）/ 保存回复 / 流式完成·中止·异常 / 中止保存 / 多模态消息 / 图片上传 |
-| 分布式追踪 | tracing.py + agent.py 的 `TracingMiddleware()` | OTLP（gRPC 4317 / HTTP 3000）导出，AgentScope Studio 可直接可视化 trace 树、token 用量、耗时；`tracing_enabled=false` 时零开销短路 |
+| 分布式追踪 | tracing.py + agent_factory.py 的 `TracingMiddleware()` | OTLP（gRPC 4317 / HTTP 3000）导出，AgentScope Studio 可直接可视化 trace 树、token 用量、耗时；`tracing_enabled=false` 时零开销短路 |
 
 日志设计约定：**节点[名称]** 前缀统一格式，每条链路可凭 `conversation` / `call_id` 串起全轨迹。
 
