@@ -1,5 +1,15 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
+// 带 HTTP 状态码的业务错误：调用方靠它区分 401（登录失效）与网络中断/5xx。
+// fetch 本身被中断（AbortError/Failed to fetch）不是 ApiError，天然不会误判为登录失效
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export type User = { id: string; username: string };
 export type Conversation = { id: string; title: string; created_at: string; updated_at: string; message_count: number; last_message?: string | null; workspace_root?: string | null; permission_mode?: string | null };
 export type Message = { id: string; role: 'user' | 'assistant'; content: string; meta: Record<string, unknown>; created_at: string };
@@ -21,7 +31,7 @@ export async function api<T>(path: string, init: RequestInit = {}, token?: strin
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || '请求失败');
+    throw new ApiError(response.status, body.detail || '请求失败');
   }
   if (response.status === 204) return undefined as T;
   return response.json();

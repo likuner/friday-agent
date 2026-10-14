@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { CloseOutlined, DeleteOutlined, FolderAddOutlined, FolderOpenOutlined, HistoryOutlined, LoadingOutlined, LogoutOutlined, MessageOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusCircleOutlined } from '@ant-design/icons';
 import { App, Button, Dropdown, Tooltip } from 'antd';
-import { conversations, createConversation, deleteConversation, pickWorkspace, setWorkspace, type Conversation } from '@/lib/api';
+import { ApiError, conversations, createConversation, deleteConversation, pickWorkspace, setWorkspace, type Conversation } from '@/lib/api';
 import { shortDir } from '@/lib/path';
 import LoadMore from '@/components/LoadMore';
 import Logo from '@/components/Logo';
@@ -56,8 +56,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       };
       if (kind === 'workspace') { setWorkspaceItems(append); setWorkspaceTotal(page.total); }
       else { setPlainItems(append); setPlainTotal(page.total); }
-    } catch {
-      logout(); router.replace('/login');
+    } catch (error) {
+      // 只有后端明确返回 401 才算登录失效。快速刷新时浏览器会中断在途请求
+      // （AbortError/Failed to fetch），这类错误不清登录态，否则会把好的 token 抹掉、
+      // 下次加载因读不到 token 而误跳登录页；5xx/网络抖动同样只跳过本次拉取
+      if (error instanceof ApiError && error.status === 401) {
+        logout(); router.replace('/login');
+      }
     } finally {
       loadingRef.current[kind] = false;
       setLoadingKind((old) => ({ ...old, [kind]: false }));
