@@ -4,9 +4,11 @@
 - 医学问题：模型应自主调用 medical_rag_search 工具，回答非空且含相关关键词；
 - 非医学问题：模型不应调用工具。
 
+每条用例按 AgentService.stream() 的无状态路径现场组装一次性 Agent
+（凭证 + build_agent + MCP 白名单，不带历史回放/内置工具/权限链路），
 运行轨迹用 agentscope 内置的 ConsoleRenderer 做终端可视化（逐事件渲染
 文本增量、思考、工具调用与工具结果）；LLM 裁判需要配置 EVAL_JUDGE_API_KEY，
-未配置时自动跳过（key 暂时留空，先跑通逻辑）。
+未配置时自动跳过。
 
 运行：.venv/bin/python scripts/eval_agent.py [--verbose]
 """
@@ -22,13 +24,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agentscope.console import ConsoleRenderer  # noqa: E402
+from agentscope.credential import DeepSeekCredential  # noqa: E402
 from agentscope.event import EventType  # noqa: E402
 from agentscope.message import UserMsg  # noqa: E402
+from agentscope.state import AgentState  # noqa: E402
 
-from app.agent import AgentService  # noqa: E402
-from app.logging_config import setup_logging  # noqa: E402
+from app.agent_factory import build_agent  # noqa: E402
+from app.agent_mcps import mcp_client, probe_mcp_tools  # noqa: E402
+from app.agent_skills import probe_skills  # noqa: E402
+from app.config import settings  # noqa: E402
 
 logger = logging.getLogger("friday.eval_agent")
+
+
+def setup_logging() -> None:
+    # 与 mcp-server/scripts/eval_rag.py 同款：评测脚本以终端输出为主，
+    # 不接入 friday_shared 的服务日志（避免评测运行混入 backend.log）
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
 
 CASES = [
     {
@@ -50,6 +66,47 @@ CASES = [
         "answer_keywords": ["friday", "助手", "智能"],
     },
 ]
+
+
+def eval_credential() -> DeepSeekCredential | None:
+    """与 AgentService.__init__ 相同的凭证装配，未配置时返回 None。"""
+    if settings.model_provider == "deepseek" and settings.openai_api_key:
+        return DeepSeekCredential(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        )
+    return None
+
+
+async def run_case(case: dict, credential: DeepSeekCredential, index: int, verbose: bool) -> dict:
+    """跑单条用例：每条现场组装一次性 Agent，ConsoleRenderer 实时可视化。"""
+    # 组装对齐 AgentService.stream()：MCP 白名单只放 medical_rag_search
+    # （评测对象），web_search/内置工具/历史回放不参与
+    mcps = None
+    if settings.mcp_server_url:
+        client = mcp_client(["medical_rag_search"])
+        await probe_mcp_tools(client)
+        mcps = [client]
+    await probe_skills()
+    agent = build_agent(
+        credential,
+        settings.openai_model,
+        AgentState(session_id=f"eval-agent-{index}"),
+        mcps=mcps,
+    )
+
+    renderer = ConsoleRenderer(verbosity="default" if verbose else "quiet")
+    answer_parts: list[str] = []
+    tool_calls: list[str] = []
+
+    async for event in agent.reply_stream(UserMsg(name="user", content=case["query"])):
+        renderer.render(event)
+        if event.type == EventType.TEXT_BLOCK_DELTA:
+            answer_parts.append(event.delta)
+        elif event.type == EventType.TOOL_CALL_START:
+            tool_calls.append(event.tool_call_name)
+
+    return {"tool_calls": tool_calls, "answer": "".join(answer_parts)}
 
 
 async def judge_answer(query: str, answer: str) -> float | None:
@@ -77,42 +134,22 @@ async def judge_answer(query: str, answer: str) -> float | None:
     return None
 
 
-async def run_case(case: dict, verbose: bool) -> dict:
-    """跑单条用例：消费 agent 原生事件流，ConsoleRenderer 实时可视化。"""
-    service = AgentService()
-    agent = service._get_agent(thinking=False, web_search=False)
-    if not agent:
-        raise RuntimeError("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
-
-    renderer = ConsoleRenderer(verbosity="default" if verbose else "quiet")
-    answer_parts: list[str] = []
-    tool_calls: list[str] = []
-
-    async for event in agent.reply_stream(UserMsg(name="user", content=case["query"])):
-        renderer.render(event)
-        if event.type == EventType.TEXT_BLOCK_DELTA:
-            answer_parts.append(event.delta)
-        elif event.type == EventType.TOOL_CALL_START:
-            tool_calls.append(event.tool_call_name)
-
-    return {"tool_calls": tool_calls, "answer": "".join(answer_parts)}
-
-
 async def main() -> None:
     setup_logging()
     verbose = "--verbose" in sys.argv
-    if not (AgentService()._get_agent(thinking=False, web_search=False)):
+    credential = eval_credential()
+    if credential is None:
         print("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
         return
 
     print(f"\n=== Agent 评测（{len(CASES)} 条用例，agentscope ConsoleRenderer 可视化）===")
     started = time.monotonic()
     results = []
-    for case in CASES:
+    for index, case in enumerate(CASES, 1):
         logger.info("评测[Agent用例开始] %s query=%r", case["name"], case["query"])
         print(f"\n--- 用例：{case['name']}  问题：{case['query']} ---")
 
-        result = await run_case(case, verbose)
+        result = await run_case(case, credential, index, verbose)
         answer, tool_calls = result["answer"], result["tool_calls"]
 
         tool_ok = (len(tool_calls) > 0) == case["expect_tool"]
