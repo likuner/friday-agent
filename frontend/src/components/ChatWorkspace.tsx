@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowDownOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DownOutlined, EditOutlined, EyeOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { ArrowDownOutlined, ArrowUpOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, EyeOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, HolderOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
 import { App, Button, Dropdown, Image as AntdImage } from 'antd';
 import { authImageUrl, conversation, confirmPermission, createConversation, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
 import Markdown from '@/components/Markdown';
@@ -35,6 +38,19 @@ const STICK_THRESHOLD = 48;
 
 // 单条消息最多可带几张图片（与后端 ChatRequest.attachments 的上限保持一致）
 const MAX_ATTACHMENTS = 9;
+
+// 排队消息上限：每条都会在当前回答结束后触发一轮完整生成，过多既展示不下也无意义
+const MAX_QUEUE = 5;
+
+// 回答生成中继续发送的消息：进入队列，当前回答结束后自动轮候发出
+type QueuedMessage = { id: string; content: string; attachments: string[] };
+
+// 聚焦并把光标移到文本末尾（autoFocus 默认落在开头）
+const focusAtEnd = (el: HTMLTextAreaElement | null) => {
+  if (!el) return;
+  el.focus();
+  el.setSelectionRange(el.value.length, el.value.length);
+};
 
 // 消息里的图片附件
 // 单张图片：文件缺失/被删时降级成占位块，避免浏览器显示裂图
@@ -106,6 +122,99 @@ function AttachmentThumb({ name }: { name: string }) {
   return <img src={src} alt="待发送图片" className="h-16 w-16 rounded-lg border border-line bg-soft object-cover" />;
 }
 
+// 排队待发送的消息卡片：回答生成中继续发送的消息逐条轮候，
+// 支持拖拽换序、「立即发送」打断当前回答优先发出，以及编辑与删除
+function QueueCard({ item, onSendNow, onSave, onDelete }: {
+  item: QueuedMessage;
+  onSendNow: () => void;
+  onSave: (content: string) => void;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.content);
+  // 拖拽排序（@dnd-kit）：手柄是唯一触发器；拖动中卡片半透明上浮，其余卡片 transform 让位
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
+
+  const cancel = () => { setEditing(false); setDraft(item.content); };
+  const submit = () => {
+    if (!draft.trim()) return;
+    setEditing(false);
+    onSave(draft);
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        // 被拖拽的卡片必须无过渡（1:1 跟手）；松手回位时 dnd-kit 不给 transition，兜底一个
+        transition: isDragging ? undefined : (transition ?? 'transform 200ms ease'),
+      }}
+      className={`queue-card-in flex min-h-[52px] items-center gap-3 rounded-2xl border border-line bg-soft px-3.5 py-2 ${isDragging ? 'z-10 opacity-70 shadow-[0_14px_30px_-16px_rgba(20,35,80,.5)]' : ''}`}
+    >
+      <button
+        type="button"
+        ref={setActivatorNodeRef}
+        {...attributes}
+        {...listeners}
+        title="拖拽调整发送顺序"
+        aria-label="拖拽调整发送顺序"
+        className="shrink-0 cursor-grab touch-none select-none text-[16px] text-muted-weak transition-colors hover:text-body"
+      >
+        <HolderOutlined />
+      </button>
+      {editing ? (
+        <div className="min-w-0 flex-1">
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') cancel();
+              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); }
+            }}
+            rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+            ref={focusAtEnd}
+            className="block w-full resize-none border-0 bg-transparent py-1 text-[13.5px] leading-6 outline-none"
+          />
+          <div className="flex items-center justify-end gap-1 text-xs">
+            <button type="button" onClick={cancel} className="rounded px-2 py-1 text-muted transition-colors hover:bg-hover">取消</button>
+            <button type="button" onClick={submit} disabled={!draft.trim()} className="rounded px-2 py-1 font-medium text-brand transition-colors hover:bg-hover disabled:opacity-50">保存</button>
+          </div>
+        </div>
+      ) : (
+        <div className="min-w-0 flex-1">
+          {item.content && <div className="line-clamp-4 whitespace-pre-wrap text-[13.5px] leading-6 text-body" title={item.content}>{item.content}</div>}
+          {item.attachments.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {item.attachments.map((name) => <AttachmentThumb key={name} name={name} />)}
+            </div>
+          )}
+        </div>
+      )}
+      {!editing && (
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onSendNow}
+            title="停止当前回答并立即发送这条消息"
+            className="inline-flex items-center gap-1 rounded-full bg-hover px-3.5 py-1.5 text-[13px] font-medium text-ink transition-colors hover:bg-line"
+          >
+            <ArrowUpOutlined className="text-[12px]" /> 立即
+          </button>
+          {item.content && (
+            <button type="button" onClick={() => { setDraft(item.content); setEditing(true); }} title="编辑这条排队消息" className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-hover hover:text-ink">
+              <EditOutlined />
+            </button>
+          )}
+          <button type="button" onClick={onDelete} title="删除这条排队消息" className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-hover hover:text-ink">
+            <DeleteOutlined />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 用户消息：图片单独展示在气泡之外，只有文字进蓝色气泡；气泡下方提供复制与编辑重发
 function UserMessage({ item, busy, onCopy, onResend }: { item: Message; busy: boolean; onCopy: (text: string) => void; onResend: (item: Message, content: string) => void }) {
   const [editing, setEditing] = useState(false);
@@ -134,7 +243,7 @@ function UserMessage({ item, busy, onCopy, onResend }: { item: Message; busy: bo
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); }
             }}
             rows={Math.min(8, Math.max(2, draft.split('\n').length))}
-            autoFocus
+            ref={focusAtEnd}
             className="block w-full resize-none border-0 bg-transparent py-1 text-[14.5px] leading-6 outline-none"
           />
           <div className="mt-1 flex items-center justify-end gap-1 text-xs">
@@ -292,6 +401,18 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
   // 当前流式请求的中止控制器（「停止生成」按钮使用）
   const abortRef = useRef<AbortController | null>(null);
+  // 发送队列：回答生成中继续发送的消息在此排队，流结束后由 drainQueue 轮候发出。
+  // 控制流一律读 ref（state 只负责渲染），避免异步收尾链路拿到过期闭包
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const queueRef = useRef<QueuedMessage[]>([]);
+  const busyRef = useRef(false);
+  // 「立即发送」的插队项：abort 当前流后，收尾时优先发出它而不是队首
+  const immediateNextRef = useRef<QueuedMessage | null>(null);
+  // 显式停止/发送出错后置位：本轮收尾不自动续发队列
+  const skipNextDrainRef = useRef(false);
+  // latest-ref：出队发送时调用最新一次渲染的 send（读到最新的开关与会话 id）
+  const sendRef = useRef<(override?: { content: string; attachments: string[] }) => void>(() => {});
+  const updateQueue = (next: QueuedMessage[]) => { queueRef.current = next; setQueue(next); };
   // 待发送的图片附件（已上传到后端 files）
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -322,6 +443,10 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   // 会话切换：重置滚动/工作区/权限模式（工作区与权限随详情返回，无则默认）
   useEffect(() => {
     stick.current = true; setAtBottom(true); setWorkspaceRoot(null); setPermissionMode('default');
+    // 清空排队状态：在途流的收尾不得把排队消息发进新切换的会话
+    updateQueue([]);
+    immediateNextRef.current = null;
+    skipNextDrainRef.current = true;
     if (token && conversationId) conversation(token, conversationId).then((data) => {
       setId(data.id); setTitle(data.title); setMessages(data.messages);
       setWorkspaceRoot(data.workspace_root || null);
@@ -332,7 +457,10 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   // 只有用户本来贴着底部才自动跟随：流式输出期间上滑阅读不会被拉回底部
   useEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [messages]);
 
+  // 停止当前生成：队列保留、不自动续发（排队卡片仍可编辑/删除/立即发送），
+  // 之后手动发送的新消息会插队先行，其回答结束后队列继续轮候
   const stopGenerating = () => {
+    if (queueRef.current.length) skipNextDrainRef.current = true;
     abortRef.current?.abort();
   };
 
@@ -384,7 +512,19 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const send = async (override?: { content: string; attachments: string[] }) => {
     const content = (override?.content ?? input).trim();
     const sentAttachments = override ? override.attachments : attachments.map((item) => item.name);
-    if ((!content && !sentAttachments.length) || loading || !token) return;
+    if ((!content && !sentAttachments.length) || !token) return;
+    // 正在回答时不再丢弃输入：进入发送队列，当前回答结束后自动轮候发出
+    if (busyRef.current) {
+      if (queueRef.current.length >= MAX_QUEUE) {
+        message.warning(`排队消息最多 ${MAX_QUEUE} 条`);
+        return; // 保留输入框内容，便于用户先处理队列
+      }
+      updateQueue([...queueRef.current, { id: crypto.randomUUID(), content, attachments: sentAttachments }]);
+      if (!override) { setInput(''); setAttachments([]); }
+      return;
+    }
+    busyRef.current = true;
+    skipNextDrainRef.current = false; // 清掉可能残留的「停止后不续发」标记
     setLoading(true);
     if (!override) { setInput(''); setAttachments([]); }
     stick.current = true; setAtBottom(true);
@@ -439,9 +579,10 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
         setMessages((old) => old.map((item) => item.id === assistantId ? { ...item, meta: { ...item.meta, stopped: true } } : item));
         message.info('已停止生成');
       } else {
+        skipNextDrainRef.current = true; // 出错后不自动续发队列，避免连环失败
         message.error(error instanceof Error ? error.message : '发送失败');
       }
-    } finally { abortRef.current = null; streamDone.current = true; await flushed; setLoading(false); setStreamingId(null); setToolRunning(false); }
+    } finally { abortRef.current = null; streamDone.current = true; await flushed; busyRef.current = false; setLoading(false); setStreamingId(null); setToolRunning(false); drainQueue(); }
   };
 
   // 权限确认卡片应答：先乐观置状态防重复点击，再调确认接口；后端随后的
@@ -484,6 +625,57 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     setMessages((old) => old.slice(0, index));
     await send({ content, attachments: (item.meta?.attachments as string[]) || [] });
   };
+
+  // 出队调度：一次流式收尾后调用（停止/出错经 skipNextDrainRef 跳过本轮）；
+  // 「立即发送」的插队项优先于队首
+  const drainQueue = () => {
+    if (busyRef.current) return;
+    if (skipNextDrainRef.current) { skipNextDrainRef.current = false; return; }
+    const immediate = immediateNextRef.current;
+    if (immediate) {
+      immediateNextRef.current = null;
+      sendRef.current(immediate);
+      return;
+    }
+    const [next, ...rest] = queueRef.current;
+    if (next) {
+      updateQueue(rest);
+      sendRef.current(next);
+    }
+  };
+
+  // 立即发送：打断当前回答（走停止链路，已生成部分照常落库并标记），收尾后优先发出这条
+  const sendNow = (item: QueuedMessage) => {
+    if (immediateNextRef.current) return; // 已有一条在等插队，忽略连点避免丢消息
+    updateQueue(queueRef.current.filter((row) => row.id !== item.id));
+    if (!busyRef.current) { sendRef.current(item); return; }
+    immediateNextRef.current = item;
+    abortRef.current?.abort();
+  };
+
+  const saveQueued = (id: string, content: string) => {
+    updateQueue(queueRef.current.map((row) => (row.id === id ? { ...row, content } : row)));
+  };
+
+  const deleteQueued = (id: string) => {
+    updateQueue(queueRef.current.filter((row) => row.id !== id));
+  };
+
+  // 排队卡片拖拽换序（@dnd-kit）：PointerSensor 位移 4px 才激活（避免误触），
+  // KeyboardSensor 支持手柄聚焦后空格+方向键调整顺序
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const handleQueueDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const from = queueRef.current.findIndex((row) => row.id === active.id);
+    const to = queueRef.current.findIndex((row) => row.id === over.id);
+    if (from < 0 || to < 0) return;
+    updateQueue(arrayMove(queueRef.current, from, to));
+  };
+
+  sendRef.current = send;
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-canvas">
@@ -600,6 +792,23 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
         )}
       </div>
       <div className="shrink-0 px-4 pb-5 pt-1 sm:px-6">
+        {queue.length > 0 && (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleQueueDragEnd}>
+            <SortableContext items={queue} strategy={verticalListSortingStrategy}>
+              <div className="scroll-hide mx-auto mb-2 max-h-[40vh] max-w-[800px] space-y-2 overflow-y-auto">
+                {queue.map((item) => (
+                  <QueueCard
+                    key={item.id}
+                    item={item}
+                    onSendNow={() => sendNow(item)}
+                    onSave={(content) => saveQueued(item.id, content)}
+                    onDelete={() => deleteQueued(item.id)}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
+        )}
         <div className="mx-auto max-w-[800px] rounded-[24px] border border-line-strong bg-surface/95 px-4 pb-2.5 pt-3 shadow-[0_18px_44px_-24px_rgba(20,35,80,.35)] backdrop-blur transition-all duration-200 focus-within:border-line-focus focus-within:shadow-[0_18px_46px_-20px_rgba(77,107,254,.5)]">
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
@@ -628,7 +837,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
               }
             }}
             rows={2}
-            placeholder="给 Friday 发送消息…"
+            placeholder={loading ? '继续输入以排队后续修改' : '给 Friday 发送消息…'}
             className="block w-full resize-none border-0 bg-transparent py-1 text-[14.5px] leading-6 outline-none"
           />
           <div className="mt-2 flex items-center gap-2">
@@ -682,7 +891,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                 </button>
               </Dropdown>
             )}
-            {loading ? (
+            {loading && !input.trim() && !attachments.length ? (
               <button
                 type="button"
                 onClick={stopGenerating}
@@ -694,12 +903,13 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
               </button>
             ) : (
               <Button
-                type="primary"
+                type={loading ? 'default' : 'primary'}
                 shape="circle"
                 icon={<SendOutlined />}
                 disabled={!input.trim() && !attachments.length}
                 onClick={() => send()}
-                className="ml-auto h-9 w-9 border-0 bg-gradient-to-br from-[#4d6bfe] to-[#7288ff] shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)] transition-transform hover:scale-105"
+                title={loading ? '加入发送队列，当前回答结束后自动发送' : '发送'}
+                className={loading ? 'ml-auto h-8 w-8 shrink-0' : 'ml-auto h-9 w-9 border-0 bg-gradient-to-br from-[#4d6bfe] to-[#7288ff] shadow-[0_8px_18px_-8px_rgba(77,107,254,.9)] transition-transform hover:scale-105'}
               />
             )}
           </div>

@@ -105,6 +105,9 @@ button, input, textarea { font: inherit; }
 
 @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .msg-in { animation: msg-in .28s ease-out both; }
+/* 排队卡片专用变体：fill-mode 不能带 forwards——forwards 会让动画终态永久覆盖
+   内联 transform（CSS 动画优先级高于 style），@dnd-kit 的拖拽位移与过渡会全部失效 */
+.queue-card-in { animation: msg-in .28s ease-out backwards; }
 
 /* 注意（Turbopack dev 环境）：在 .tsx 里新增 Tailwind 类有时不会触发 CSS 重建，
    表现为新类名不在产物 CSS 里、样式不生效。改一下本文件即可强制重建。 */
