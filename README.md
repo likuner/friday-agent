@@ -185,10 +185,10 @@ npm run dev
 | `JWT_EXPIRE_MINUTES` | `10080` | Token 有效期（分钟） |
 | `CORS_ORIGINS` | `http://localhost:3000` | 允许的前端来源，逗号分隔 |
 | `MODEL_PROVIDER` | `demo` | `demo` 返回本地演示流；真正调用模型设为 `deepseek` |
-| `OPENAI_API_KEY` | 空 | 模型服务密钥；为空时走演示模式 |
-| `OPENAI_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
-| `OPENAI_MODEL` | `deepseek-v4-pro` | 常规对话模型（V4 系列；`deepseek-chat` 已于 2026-07 退役） |
-| `OPENAI_THINKING_MODEL` | `deepseek-v4-pro` | 深度思考模型，需支持 reasoning（V4 系列均原生支持）；留空则退化为提示词引导 |
+| `LLM_API_KEY` | 空 | 模型服务密钥；为空时走演示模式 |
+| `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
+| `LLM_MODEL` | `deepseek-v4-pro` | 常规对话模型（V4 系列；`deepseek-chat` 已于 2026-07 退役） |
+| `LLM_THINKING_MODEL` | `deepseek-v4-pro` | 深度思考模型，需支持 reasoning（V4 系列均原生支持）；留空则退化为提示词引导 |
 | `ZHIPU_API_KEY` | 空 | 智谱密钥，用于查询向量化、rerank 精排与联网搜索 |
 | `EMBEDDING_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | 向量化与 rerank 接口地址 |
 | `EMBEDDING_MODEL` | `embedding-3` | 向量模型 |
@@ -377,7 +377,7 @@ npx tsc --noEmit   # 类型检查
 
 ## 已知限制
 
-- **~~默认模型已标记 sunset~~（已迁移）**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 退役，`OPENAI_MODEL` / `OPENAI_THINKING_MODEL` 已迁到 `deepseek-v4-pro`（V4 系列均原生支持 thinking）。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
+- **~~默认模型已标记 sunset~~（已迁移）**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 退役，`LLM_MODEL` / `LLM_THINKING_MODEL` 已迁到 `deepseek-v4-pro`（V4 系列均原生支持 thinking）。演示模式（`MODEL_PROVIDER=demo`）不需要任何密钥。
 - **`/files` 静态目录无鉴权**：依靠 32 位随机 UUID 文件名不可枚举来保护。正式产品建议改为带鉴权的下载接口或签名 URL。
 - **点赞状态仅保存在前端**：刷新后重置，未落库。
 - **历史图片不重复送模型**：多轮追问时，模型只能看到当前这一轮附带的图片（历史轮次回放为 `[图片]` 占位文本）。

@@ -3,7 +3,7 @@
 每轮请求由 agent.py 的 AgentService.stream() 调用，无跨请求共享状态。
 """
 
-from agentscope.agent import Agent
+from agentscope.agent import Agent, InjectionConfig
 from agentscope.credential import DeepSeekCredential
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.mcp import MCPClient
@@ -46,6 +46,9 @@ def build_agent(
         + (f"\n\n{agent_tools_prompt}" if agent_tools_prompt else ""),
         # Tracing 未配置时自动短路；日志中间件产出执行段节点日志（模型/工具/耗时/token）
         middlewares=[TracingMiddleware(), AgentLoggingMiddleware()],
+        # 框架默认以 UTC 注入 <current-time>，模型会先答 UTC 再自行换算；
+        # 改成东八区后直接报告北京时间
+        injection_config=InjectionConfig(timezone="Asia/Shanghai"),
         # 每轮一次性状态：session_id 绑定会话，summary 承载滚动摘要
         state=state,
         model=DeepSeekChatModel(

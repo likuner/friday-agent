@@ -70,10 +70,10 @@ CASES = [
 
 def eval_credential() -> DeepSeekCredential | None:
     """与 AgentService.__init__ 相同的凭证装配，未配置时返回 None。"""
-    if settings.model_provider == "deepseek" and settings.openai_api_key:
+    if settings.model_provider == "deepseek" and settings.llm_api_key:
         return DeepSeekCredential(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
         )
     return None
 
@@ -90,7 +90,7 @@ async def run_case(case: dict, credential: DeepSeekCredential, index: int, verbo
     await probe_skills()
     agent = build_agent(
         credential,
-        settings.openai_model,
+        settings.llm_model,
         AgentState(session_id=f"eval-agent-{index}"),
         mcps=mcps,
     )
@@ -139,7 +139,7 @@ async def main() -> None:
     verbose = "--verbose" in sys.argv
     credential = eval_credential()
     if credential is None:
-        print("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 OPENAI_API_KEY")
+        print("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 LLM_API_KEY")
         return
 
     print(f"\n=== Agent 评测（{len(CASES)} 条用例，agentscope ConsoleRenderer 可视化）===")

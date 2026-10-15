@@ -162,8 +162,8 @@ backend/
 
 - **按开关组合装配**（每轮重建，`agent_factory.build_agent()`）：AgentService 无状态，
   每轮请求按开关组合现建一次性 Agent（独立 Toolkit 与对话状态，记忆的唯一事实来源是
-  数据库）。普通对话用 `openai_model`（deepseek-v4-pro）；
-  「深度思考」打开且配置了 `openai_thinking_model`（deepseek-v4-pro）时切换到
+  数据库）。普通对话用 `llm_model`（deepseek-v4-pro）；
+  「深度思考」打开且配置了 `llm_thinking_model`（deepseek-v4-pro）时切换到
   带 `thinking_enable=True` 的 reasoning Agent——思考过程以独立 `THINKING_BLOCK_DELTA`
   事件流出，前端折叠展示；未配置 thinking 模型则退化为提示词引导；
 - **MCP 工具**（mcp-server，streamable-http；`agent_mcps.py`）：`medical_rag_search`（医学文献混合检索）

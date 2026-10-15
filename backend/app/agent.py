@@ -49,10 +49,10 @@ class AgentService:
 
     def __init__(self) -> None:
         self._credential: DeepSeekCredential | None = None
-        if settings.model_provider == "deepseek" and settings.openai_api_key:
+        if settings.model_provider == "deepseek" and settings.llm_api_key:
             self._credential = DeepSeekCredential(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_base_url,
             )
 
     async def stream(
@@ -70,7 +70,7 @@ class AgentService:
         workspace_root: str | None = None,
         user_id: UUID | None = None,
     ) -> AsyncIterator[dict[str, str]]:
-        use_thinking = deep_thinking and bool(settings.openai_thinking_model)
+        use_thinking = deep_thinking and bool(settings.llm_thinking_model)
         # 医学检索（medical_rag_search）已迁至 mcp-server：URL 配置即挂载；
         # web_search 仍按请求开关拼进白名单，URL 未配置时降级为提示词引导
         # （服务端临时不可达由 Toolkit 列工具时静默跳过，不影响对话）
@@ -81,7 +81,13 @@ class AgentService:
         builtin_tools = None
         agent_tools_prompt = ""
         if self._credential is not None:
-            model = settings.openai_thinking_model if use_thinking else settings.openai_model
+            if attachments:
+                # 默认档 v4-pro 无视觉（API 把图片静默换成 [Unsupported Image] 占位文本），
+                # 带图请求整轮切多模态档；思考开关随之失效，下方自动退化为提示词引导
+                model = settings.llm_vision_model
+                use_thinking = False
+            else:
+                model = settings.llm_thinking_model if use_thinking else settings.llm_model
             state_kwargs: dict[str, object] = {
                 "session_id": str(conversation_id),
                 "summary": f"【本会话此前对话的滚动摘要（要点记录，细节以最近消息为准）】\n{summary}" if summary else "",
@@ -213,7 +219,7 @@ class AgentService:
             "建议先明确目标、输入和验收标准，再按最小闭环实现。"
             "如果这是工程问题，可以从数据结构、错误处理、性能边界和测试用例四个方面逐项确认。\n\n"
             "当前服务未配置外部模型密钥，因此这里返回的是本地演示流式回复。"
-            "配置 OPENAI_API_KEY 并将 MODEL_PROVIDER 设置为 deepseek 后，会通过 AgentScope 2.0.8 调用 DeepSeek。"
+            "配置 LLM_API_KEY 并将 MODEL_PROVIDER 设置为 deepseek 后，会通过 AgentScope 2.0.8 调用 DeepSeek。"
         )
 
 

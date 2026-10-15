@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowDownOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DownOutlined, EditOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
+import { ArrowDownOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DownOutlined, EditOutlined, EyeOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
 import { App, Button, Dropdown, Image as AntdImage } from 'antd';
 import { authImageUrl, conversation, confirmPermission, createConversation, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
 import Markdown from '@/components/Markdown';
@@ -79,6 +79,7 @@ function MessageImage({ name }: { name: string }) {
       style={{ objectFit: 'cover' }}
       className="rounded-xl"
       wrapperClassName="overflow-hidden rounded-xl"
+      preview={{ mask: <EyeOutlined /> }}
     />
   );
 }

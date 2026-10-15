@@ -42,9 +42,9 @@ cp .env.example .env
 - `JWT_SECRET`：JWT 签名密钥，生产环境必须替换
 - `CORS_ORIGINS`：前端地址，默认 `http://localhost:3000`
 - `MODEL_PROVIDER`：默认 `demo`；真实模型设置为 `deepseek`
-- `OPENAI_API_KEY`：DeepSeek API Key
-- `OPENAI_BASE_URL`：默认 `https://api.deepseek.com`
-- `OPENAI_MODEL`：默认 `deepseek-v4-pro`
+- `LLM_API_KEY`：DeepSeek API Key
+- `LLM_BASE_URL`：默认 `https://api.deepseek.com`
+- `LLM_MODEL`：默认 `deepseek-v4-pro`
 
 ## 启动 PostgreSQL
 
