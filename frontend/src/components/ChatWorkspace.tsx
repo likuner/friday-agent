@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { ArrowDownOutlined, ArrowUpOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, EyeOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, HolderOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
@@ -132,7 +132,8 @@ function QueueCard({ item, onSendNow, onSave, onDelete }: {
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.content);
-  // 拖拽排序（@dnd-kit）：手柄是唯一触发器；拖动中卡片半透明上浮，其余卡片 transform 让位
+  // 拖拽排序（@dnd-kit）：手柄是唯一触发器；拖动中原卡片变虚线 ghost 占位，
+  // 跟随指针的浮层在 DragOverlay 里渲染，其余卡片 transform 让位
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
 
   const cancel = () => { setEditing(false); setDraft(item.content); };
@@ -146,11 +147,14 @@ function QueueCard({ item, onSendNow, onSave, onDelete }: {
     <div
       ref={setNodeRef}
       style={{
-        transform: CSS.Transform.toString(transform),
-        // 被拖拽的卡片必须无过渡（1:1 跟手）；松手回位时 dnd-kit 不给 transition，兜底一个
+        // 拖动中的卡片本体留在原位当占位 ghost（跟随指针的浮层由 DragOverlay 渲染）。
+        // 不能给它 transform：transform 会撑大滚动容器的可滚动区，指针贴着底边时
+        // auto-scroll 反复启停、碰撞目标来回翻转，兄弟卡片就会抖动
+        transform: isDragging ? undefined : CSS.Transform.toString(transform),
+        // 松手回位时 dnd-kit 不给 transition，兜底一个
         transition: isDragging ? undefined : (transition ?? 'transform 200ms ease'),
       }}
-      className={`queue-card-in flex min-h-[52px] items-center gap-3 rounded-2xl border border-line bg-soft px-3.5 py-2 ${isDragging ? 'z-10 opacity-70 shadow-[0_14px_30px_-16px_rgba(20,35,80,.5)]' : ''}`}
+      className={`queue-card-in flex min-h-[52px] items-center gap-3 rounded-2xl border border-line bg-soft px-3.5 py-2 ${isDragging ? 'border-dashed opacity-40' : ''}`}
     >
       <button
         type="button"
@@ -211,6 +215,24 @@ function QueueCard({ item, onSendNow, onSave, onDelete }: {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// DragOverlay 里跟随指针的浮层卡片：纯静态展示（不可交互），宽度由 DragOverlay 按原卡片量测值锁定。
+// 必须是独立组件——不能复用 QueueCard，否则会注册一个同 id 的 sortable
+function QueueCardOverlay({ item }: { item: QueuedMessage }) {
+  return (
+    <div className="flex min-h-[52px] cursor-grabbing items-center gap-3 rounded-2xl border border-line bg-soft px-3.5 py-2 shadow-[0_18px_36px_-14px_rgba(20,35,80,.45)]">
+      <span className="shrink-0 select-none text-[16px] text-muted-weak"><HolderOutlined /></span>
+      <div className="min-w-0 flex-1">
+        {item.content && <div className="line-clamp-4 whitespace-pre-wrap text-[13.5px] leading-6 text-body">{item.content}</div>}
+        {item.attachments.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {item.attachments.map((name) => <AttachmentThumb key={name} name={name} />)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -667,7 +689,11 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  // 拖动中的排队消息 id：DragOverlay 据此渲染跟随指针的浮层
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const draggingItem = queue.find((row) => row.id === draggingId);
   const handleQueueDragEnd = ({ active, over }: DragEndEvent) => {
+    setDraggingId(null);
     if (!over || active.id === over.id) return;
     const from = queueRef.current.findIndex((row) => row.id === active.id);
     const to = queueRef.current.findIndex((row) => row.id === over.id);
@@ -793,7 +819,13 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
       </div>
       <div className="shrink-0 px-4 pb-5 pt-1 sm:px-6">
         {queue.length > 0 && (
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleQueueDragEnd}>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={({ active }) => setDraggingId(String(active.id))}
+            onDragEnd={handleQueueDragEnd}
+            onDragCancel={() => setDraggingId(null)}
+          >
             <SortableContext items={queue} strategy={verticalListSortingStrategy}>
               <div className="scroll-hide mx-auto mb-2 max-h-[40vh] max-w-[800px] space-y-2 overflow-y-auto">
                 {queue.map((item) => (
@@ -807,6 +839,9 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                 ))}
               </div>
             </SortableContext>
+            <DragOverlay>
+              {draggingItem ? <QueueCardOverlay item={draggingItem} /> : null}
+            </DragOverlay>
           </DndContext>
         )}
         <div className="mx-auto max-w-[800px] rounded-[24px] border border-line-strong bg-surface/95 px-4 pb-2.5 pt-3 shadow-[0_18px_44px_-24px_rgba(20,35,80,.35)] backdrop-blur transition-all duration-200 focus-within:border-line-focus focus-within:shadow-[0_18px_46px_-20px_rgba(77,107,254,.5)]">

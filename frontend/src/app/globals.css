@@ -106,7 +106,9 @@ button, input, textarea { font: inherit; }
 @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .msg-in { animation: msg-in .28s ease-out both; }
 /* 排队卡片专用变体：fill-mode 不能带 forwards——forwards 会让动画终态永久覆盖
-   内联 transform（CSS 动画优先级高于 style），@dnd-kit 的拖拽位移与过渡会全部失效 */
+   内联 transform（CSS 动画优先级高于 style），@dnd-kit 的拖拽位移与过渡会全部失效。
+   拖拽改用 DragOverlay 浮层 + 原位 ghost：拖动中原卡片不再有 transform，
+   避免撑大滚动容器触发 auto-scroll 循环抖动 */
 .queue-card-in { animation: msg-in .28s ease-out backwards; }
 
 /* 注意（Turbopack dev 环境）：在 .tsx 里新增 Tailwind 类有时不会触发 CSS 重建，
