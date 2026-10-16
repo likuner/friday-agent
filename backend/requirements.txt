@@ -9,7 +9,7 @@ pwdlib[argon2]==0.2.1
 python-multipart==0.0.20
 Pillow==11.1.0
 httpx==0.28.1
-agentscope==2.0.8
+agentscope==2.0.10
 # 可观测：AgentScope 的 TracingMiddleware 依赖 OpenTelemetry，显式声明避免仅靠传递依赖
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp==1.44.0
