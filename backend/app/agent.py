@@ -1,9 +1,10 @@
 """AgentService：每轮无状态重建一次性 Agent 的对话编排。
 
-各部件已按职责拆出——组装在 agent_factory，MCP 挂载在 agent_mcps，
-技能加载在 agent_skills，输入消息构造在 agent_messages，事件→SSE 翻译
-在 agent_events；本模块只负责按开关组合把部件串成流式回复
-（含权限确认 park/resume 与演示降级）。
+各部件已按职责拆出——组装在 agent_factory（单 Agent 的 build_agent 与
+多智能体的 build_team），MCP 挂载在 agent_mcps，技能加载在 agent_skills，
+输入消息构造在 agent_messages，事件→SSE 翻译在 agent_events；本模块只负责
+按开关组合把部件串成流式回复（含权限确认 park/resume 与演示降级）。
+多智能体模式下串的是 TeamPipeline，事件循环与权限链路对两者通用。
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from agentscope.permission import PermissionMode
 from agentscope.state import AgentState
 
 from .agent_events import ReplyEventTranslator, tool_query
-from .agent_factory import build_agent
+from .agent_factory import build_agent, build_team
 from .agent_mcps import mcp_client, probe_mcp_tools
 from .agent_messages import replay_msgs, user_message
 from .agent_skills import probe_skills
@@ -69,6 +70,7 @@ class AgentService:
         permission_mode: str = "default",
         workspace_root: str | None = None,
         user_id: UUID | None = None,
+        multi_agent: bool = False,
     ) -> AsyncIterator[dict[str, str]]:
         use_thinking = deep_thinking and bool(settings.llm_thinking_model)
         # 医学检索（medical_rag_search）已迁至 mcp-server：URL 配置即挂载；
@@ -78,6 +80,13 @@ class AgentService:
         use_search = web_search and use_mcp
         # 内置工具受服务端总开关约束（安全边界见 agent_tools.py 模块说明）
         use_agent_tools = agent_tools and settings.agent_tools_enabled
+        # 多智能体：请求与服务端开关全开、非带图（视觉档只有单 Agent）且至少
+        # 有一名成员可组建（检索员随 MCP、执行员随 agent_tools）。关闭时走
+        # 下方单 Agent 老路，行为与单 Agent 模式完全一致。
+        use_team = (
+            multi_agent and settings.multi_agent_enabled
+            and not attachments and (use_mcp or use_agent_tools)
+        )
         builtin_tools = None
         agent_tools_prompt = ""
         if self._credential is not None:
@@ -92,6 +101,7 @@ class AgentService:
                 "session_id": str(conversation_id),
                 "summary": f"【本会话此前对话的滚动摘要（要点记录，细节以最近消息为准）】\n{summary}" if summary else "",
             }
+            permission_context = None
             if use_agent_tools:
                 # 会话自选目录优先（用户本机目录，落库时已校验存在）；默认会话隔离目录需创建
                 workspace = resolve_workspace(conversation_id, workspace_root)
@@ -117,14 +127,30 @@ class AgentService:
                 mcps = [client]
             # 技能注册探测与日志见 agent_skills.probe_skills
             await probe_skills()
-            # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入
-            state = AgentState(**state_kwargs)  # type: ignore[arg-type]
-            agent = build_agent(
-                self._credential, model, state,
-                thinking=use_thinking, web_search=use_search, memory_block=memory_block,
-                builtin_tools=builtin_tools, agent_tools_prompt=agent_tools_prompt,
-                mcps=mcps,
-            )
+            # 每轮按会话重建无状态上下文：摘要经 AgentState.summary 由框架自动前置注入。
+            # 多智能体模式返回 TeamPipeline（Agent 与其都实现 reply_stream，下方
+            # 事件循环与权限 park/resume 通用）+ reply_id→agent 名注册表（给 SSE
+            # 事件标归属）；单 Agent 模式注册表为空，事件恒归属 Friday。
+            agent_names: dict[str, str] = {}
+            if use_team:
+                agent, agent_names = build_team(
+                    self._credential, model,
+                    session_id=str(conversation_id),
+                    summary=str(state_kwargs["summary"]),
+                    thinking=use_thinking, web_search=use_search, memory_block=memory_block,
+                    builtin_tools=builtin_tools, permission_context=permission_context,
+                    agent_tools_prompt=agent_tools_prompt, mcps=mcps,
+                )
+                replay_target = agent.leader
+            else:
+                state = AgentState(**state_kwargs)  # type: ignore[arg-type]
+                agent = build_agent(
+                    self._credential, model, state,
+                    thinking=use_thinking, web_search=use_search, memory_block=memory_block,
+                    builtin_tools=builtin_tools, agent_tools_prompt=agent_tools_prompt,
+                    mcps=mcps,
+                )
+                replay_target = agent
             user_content = content
             # 有 reasoning 模型时由模型真正产出思考过程；没有才退化成提示词引导
             if deep_thinking and not use_thinking:
@@ -132,14 +158,15 @@ class AgentService:
             if web_search and not use_search:
                 user_content = f"请结合联网检索能力回答；如果无法访问网络，请明确说明。\n\n{user_content}"
             logger.info(
-                "节点[Agent调用] conversation=%s replay=%s条(摘要=%s) model=%s thinking=%s search=%s agent_tools=%s perm=%s prompt=%r",
+                "节点[Agent调用] conversation=%s replay=%s条(摘要=%s) model=%s thinking=%s search=%s agent_tools=%s perm=%s multi_agent=%s prompt=%r",
                 conversation_id, len(replay), bool(summary), model, deep_thinking, web_search, use_agent_tools,
-                permission_mode if use_agent_tools else "-", user_content[:100],
+                permission_mode if use_agent_tools else "-", use_team, user_content[:100],
             )
-            # 历史先回放（纯文本），本轮消息（含图片）再作为输入：附件预算只留给本轮
+            # 历史先回放（纯文本），本轮消息（含图片）再作为输入：附件预算只留给本轮。
+            # 团队模式只回放给 leader——成员每轮全新（reset_members），看到历史反而串味
             if replay:
-                await agent.observe(replay_msgs(replay))
-            translator = ReplyEventTranslator()
+                await replay_target.observe(replay_msgs(replay))
+            translator = ReplyEventTranslator(agent_names)
             inputs: object = user_message(user_content, attachments)
             while True:
                 parked: RequireUserConfirmEvent | None = None
@@ -169,7 +196,13 @@ class AgentService:
                     "节点[权限确认] conversation=%s reply=%s calls=%s",
                     conversation_id, parked.reply_id, [c["name"] for c in pending.calls],
                 )
-                yield {"type": "permission_ask", "reply_id": parked.reply_id, "calls": pending.calls}
+                yield {
+                    "type": "permission_ask",
+                    "reply_id": parked.reply_id,
+                    "calls": pending.calls,
+                    # 归属 agent（单 Agent 模式恒为 Friday；团队模式解析出执行员等）
+                    "agent": translator.agent_of(parked.reply_id),
+                }
                 timed_out = False
                 try:
                     await asyncio.wait_for(

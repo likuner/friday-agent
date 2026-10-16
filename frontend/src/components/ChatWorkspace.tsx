@@ -4,25 +4,36 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { ArrowDownOutlined, ArrowUpOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, EyeOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, HolderOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
+import { ArrowDownOutlined, ArrowUpOutlined, CheckCircleOutlined, CloseOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, EyeOutlined, FileTextOutlined, FolderOpenOutlined, GlobalOutlined, HolderOutlined, LikeFilled, LikeOutlined, OrderedListOutlined, PaperClipOutlined, PictureOutlined, SafetyOutlined, SendOutlined, BulbOutlined, LoadingOutlined, MenuOutlined, SearchOutlined, TeamOutlined, UpOutlined } from '@ant-design/icons';
 import { App, Button, Dropdown, Image as AntdImage } from 'antd';
-import { authImageUrl, conversation, confirmPermission, createConversation, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
+import { authImageUrl, conversation, confirmPermission, createConversation, setPermissionMode as savePermissionMode, streamMessage, truncateMessages, uploadImage, type AgentTrace, type Message, type PermissionAsk, type ToolCall, type UploadedFile } from '@/lib/api';
 import Markdown from '@/components/Markdown';
 import ThemeToggle from '@/components/ThemeToggle';
 import Logo from '@/components/Logo';
 import { useAuth } from '@/store/auth';
 import { useUI } from '@/store/ui';
 
-// 「深度思考」「联网搜索」开关控制：
+// 「深度思考」「联网搜索」「多 Agent」开关控制：
 // 深度思考：开启后改用支持 reasoning 的模型，流式展示思考过程，回答结束后可折叠
 const SHOW_DEEP_THINKING = true;
 // 联网搜索：开启后后端注册 web_search 工具，模型 tool_call 转交 GLM 联网检索执行
 const SHOW_WEB_SEARCH = true;
+// 多 Agent：开启后后端组建团队（Friday 作 leader 规划派活，检索员/执行员执行），
+// 工具 chip 与运行提示会标注归属 agent；关闭则整轮单 Agent（服务端 MULTI_AGENT_ENABLED 是总闸）
+const SHOW_MULTI_AGENT = true;
 // Agent 工具不再有入口开关：有工作区的会话（侧边栏「工作区」组标题 + 新建）自动开启，
 // 工作区选定后不可更改；无工作区的普通会话不开启。
 
 // AgentScope 内置工具名（区别于检索类工具，运行提示显示「正在执行」）
 const BUILTIN_TOOL_NAMES = new Set(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate']);
+
+// 工具运行提示文案：内置工具（Bash/文件/任务）显示「正在执行」，检索类显示「正在检索」；
+// 多 Agent 模式带来源前缀（「检索员正在检索…」「执行员正在执行…」，Friday 是主 Agent 不标）
+function toolRunningLabel(tool: string, agent?: string) {
+  const action = BUILTIN_TOOL_NAMES.has(tool) ? '执行' : '检索';
+  const who = agent && agent !== 'Friday' ? agent : '';
+  return `${who}正在${action}`;
+}
 
 // 权限模式选项（后端 ChatRequest/会话设置的取值域；BYPASS 不开放）。
 // 仅工作区会话显示选择器；选择随会话持久化（chat 生效优先级：会话设置 > 请求参数 > default）。
@@ -319,6 +330,47 @@ function ThinkingPanel({ text, streaming, open, onToggle }: { text: string; stre
   );
 }
 
+// 协作过程中的一位成员：思考（限高滚动）+ 工具调用 chip + 汇报文本（Markdown）
+function AgentTraceSection({ trace, streaming }: { trace: AgentTrace; streaming: boolean }) {
+  const calls = trace.toolCalls || [];
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 text-xs font-medium text-body">
+        {streaming ? <LoadingOutlined spin className="text-[#4d6bfe]" /> : <CheckCircleOutlined className="text-emerald-500" />}
+        <span>{trace.name}</span>
+        <span className="font-normal text-muted-weak">{calls.length ? `${calls.length} 次调用` : '执行中'}</span>
+      </div>
+      {trace.thinking ? (
+        <div className="scroll-hide mt-1.5 max-h-[140px] overflow-y-auto whitespace-pre-wrap border-l-2 border-line-strong pl-2 text-[12px] leading-5 text-muted">{trace.thinking}</div>
+      ) : null}
+      {calls.length ? <div className="mt-1.5"><ToolCallChips calls={calls} /></div> : null}
+      {trace.text ? <div className="md mt-1.5 text-[13px] leading-6 text-body"><Markdown streaming={streaming}>{trace.text}</Markdown></div> : null}
+    </div>
+  );
+}
+
+// 多智能体协作过程面板：每位成员一节，流式期间自动展开、结束后折叠（可手动切换）。
+// 成员的思考/调用/汇报不进主回答（主回答是 leader 的综合结果）
+function AgentTracesPanel({ traces, streaming, open, onToggle }: { traces: AgentTrace[]; streaming: boolean; open: boolean; onToggle: () => void }) {
+  const totalCalls = traces.reduce((sum, trace) => sum + (trace.toolCalls?.length || 0), 0);
+  return (
+    <div className="mb-2 overflow-hidden rounded-xl border border-line bg-soft">
+      <button type="button" onClick={onToggle} className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs text-muted transition-colors hover:bg-hover">
+        <TeamOutlined />
+        <span>{streaming ? '协作进行中…' : '协作过程'}</span>
+        <span className="truncate text-muted-weak">{traces.map((trace) => trace.name).join('、')}{totalCalls ? ` · ${totalCalls} 次调用` : ''}</span>
+        <span className="ml-auto shrink-0 text-[11px]">{open ? '收起' : '展开'}</span>
+        {open ? <UpOutlined className="text-[10px]" /> : <DownOutlined className="text-[10px]" />}
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-line px-3 py-2.5">
+          {traces.map((trace) => <AgentTraceSection key={trace.name} trace={trace} streaming={streaming} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 流式期间的状态提示：无正文时的占位（正在思考/正在检索），或调用工具期间显示在已有正文下方
 function StreamingHint({ label }: { label: string }) {
   return (
@@ -333,6 +385,7 @@ function StreamingHint({ label }: { label: string }) {
 function toolChipInfo(call: ToolCall): { icon: ReactNode; label: string } {
   const q = call.query || '';
   switch (call.name) {
+    case 'TeamAssign': return { icon: <TeamOutlined />, label: `已委派：${q || '成员'}` };
     case 'web_search': return { icon: <GlobalOutlined />, label: `联网搜索：${q || '网络'}` };
     case 'Bash': return { icon: <CodeOutlined />, label: `已执行命令：${q || 'shell'}` };
     case 'Read': return { icon: <FileTextOutlined />, label: `已读取：${q || '文件'}` };
@@ -349,17 +402,19 @@ function toolChipInfo(call: ToolCall): { icon: ReactNode; label: string } {
   }
 }
 
-// 展示本轮的检索记录：一次回答可能并行检索多个角度，逐个显示实际检索词，避免看起来像重复 chip
+// 展示本轮的检索记录：一次回答可能并行检索多个角度，逐个显示实际检索词，避免看起来像重复 chip。
+// 多 Agent 模式下 chip 前缀来源 agent 名（检索员/执行员；Friday 是主 Agent 不标）
 function ToolCallChips({ calls }: { calls: ToolCall[] }) {
   if (!calls.length) return null;
   return (
     <div className="mb-2 flex flex-wrap gap-1.5">
       {calls.map((call, index) => {
         const { icon, label } = toolChipInfo(call);
+        const byline = call.agent && call.agent !== 'Friday' ? `${call.agent} · ` : '';
         return (
           <span key={index} title={call.query || call.name} className="inline-flex max-w-[320px] items-center gap-1 rounded-full border border-line-brand bg-brand-soft px-2.5 py-1 text-[11px] text-brand-text">
             {icon}
-            <span className="truncate">{label}</span>
+            <span className="truncate">{byline}{label}</span>
           </span>
         );
       })}
@@ -373,7 +428,7 @@ function PermissionCard({ ask, onConfirm }: { ask: PermissionAsk; onConfirm: (ap
   const statusText = ask.status === 'approved' ? '已允许' : ask.status === 'denied' ? '已拒绝' : '超时已自动拒绝';
   return (
     <div className="mb-2 rounded-xl border border-[#d8b75c] bg-[#fdf6e3] px-3 py-2 text-[13px] dark:border-[#6b5a24] dark:bg-[#332b14]">
-      <div className="mb-1.5 font-medium text-body">权限确认：Friday 请求执行以下操作</div>
+      <div className="mb-1.5 font-medium text-body">权限确认：{ask.agent || 'Friday'} 请求执行以下操作</div>
       {ask.calls.map((call) => (
         <div key={call.id} className="mb-1 truncate font-mono text-[12px] text-muted" title={call.query}>
           {call.name}{call.query ? `：${call.query}` : ''}
@@ -403,6 +458,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [searching, setSearching] = useState(false);
+  // 多 Agent 开关（默认开）：关闭后整轮单 Agent，行为与原有模式一致
+  const [multiAgent, setMultiAgent] = useState(true);
   // 会话工作区与权限模式：由会话详情带出（工作区会话自动开启 Agent 工具）；
   // 工作区在侧边栏「工作区」组标题 + 时选定，会话内不可更改
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
@@ -412,6 +469,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const scroller = useRef<HTMLDivElement>(null);
   const streamBuffer = useRef('');
   const thinkingBuffer = useRef('');
+  // 成员（检索员/执行员）汇报与思考的打字机缓冲：按 agent 分组，与主回答（Friday）独立
+  const agentBuffers = useRef<Record<string, { text: string; thinking: string }>>({});
   const flushTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // 正在流式输出的 assistant 消息 id：用于判断思考面板该展开还是收起
   const [streamingId, setStreamingId] = useState<string | null>(null);
@@ -419,8 +478,12 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
   const [toolRunning, setToolRunning] = useState(false);
   // 最近一次调用的工具名：内置工具（Bash/文件/任务）提示「正在执行」，检索类提示「正在检索」
   const [runningTool, setRunningTool] = useState('');
+  // 最近一次工具调用的来源 agent（「检索员/执行员」；运行提示前缀用，Friday 不标）
+  const [runningAgent, setRunningAgent] = useState('');
   // 用户手动展开/收起思考过程的覆盖值
   const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
+  // 用户手动展开/收起协作过程面板的覆盖值（默认：流式期间展开，结束后折叠）
+  const [traceOpen, setTraceOpen] = useState<Record<string, boolean>>({});
   // 当前流式请求的中止控制器（「停止生成」按钮使用）
   const abortRef = useRef<AbortController | null>(null);
   // 发送队列：回答生成中继续发送的消息在此排队，流结束后由 drainQueue 轮候发出。
@@ -557,6 +620,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     setMessages((old) => [...old, userMessage, { id: assistantId, role: 'assistant', content: '', meta: {}, created_at: new Date().toISOString() }]);
     streamBuffer.current = '';
     thinkingBuffer.current = '';
+    agentBuffers.current = {};
     setStreamingId(assistantId);
     setToolRunning(false);
     // 打字机节奏放缓冲区：每个 token 都 setState 会导致整列表+Markdown 高频重渲染。
@@ -564,11 +628,46 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     const streamDone = { current: false };
     let finishFlush: () => void = () => {};
     const flushed = new Promise<void>((resolve) => { finishFlush = resolve; });
+    // 把某个成员的缓冲按打字机节奏并入消息 meta.agentTraces（不存在则建档）
+    const applyTraceReveals = (reveals: Record<string, { text?: string; thinking?: string }>) => {
+      setMessages((old) => old.map((item) => {
+        if (item.id !== assistantId) return item;
+        const traces = [...((item.meta?.agentTraces as AgentTrace[]) || [])];
+        for (const [name, reveal] of Object.entries(reveals)) {
+          const index = traces.findIndex((trace) => trace.name === name);
+          const base = index >= 0 ? traces[index] : { name, text: '', thinking: '', toolCalls: [] as ToolCall[] };
+          const next: AgentTrace = {
+            ...base,
+            text: (base.text || '') + (reveal.text || ''),
+            thinking: (base.thinking || '') + (reveal.thinking || ''),
+          };
+          if (index >= 0) traces[index] = next; else traces.push(next);
+        }
+        return { ...item, meta: { ...item.meta, agentTraces: traces } };
+      }));
+    };
     flushTimer.current = setInterval(() => {
       const buffered = streamBuffer.current;
       const pendingThinking = thinkingBuffer.current;
-      // 思考与正文两个缓冲都排空，且上游结束，才算这一次流式真正收尾
-      if (!buffered && !pendingThinking) {
+      // 思考、正文与各成员缓冲全部排空，且上游结束，才算这一次流式真正收尾
+      const agentReveals: Record<string, { text?: string; thinking?: string }> = {};
+      for (const [name, buf] of Object.entries(agentBuffers.current)) {
+        const reveal: { text?: string; thinking?: string } = {};
+        if (buf.thinking) {
+          const take = Math.min(buf.thinking.length, Math.max(4, Math.ceil(buf.thinking.length / 8)));
+          reveal.thinking = buf.thinking.slice(0, take);
+          buf.thinking = buf.thinking.slice(take);
+        }
+        if (buf.text) {
+          const take = Math.min(buf.text.length, Math.max(2, Math.ceil(buf.text.length / 8)));
+          reveal.text = buf.text.slice(0, take);
+          buf.text = buf.text.slice(take);
+        }
+        if (reveal.text || reveal.thinking) agentReveals[name] = reveal;
+      }
+      if (Object.keys(agentReveals).length) applyTraceReveals(agentReveals);
+      const agentPending = Object.values(agentBuffers.current).some((buf) => buf.text || buf.thinking);
+      if (!buffered && !pendingThinking && !agentPending) {
         if (streamDone.current) { if (flushTimer.current) clearInterval(flushTimer.current); flushTimer.current = null; finishFlush(); }
         return;
       }
@@ -587,13 +686,34 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
     }, 50);
     const controller = new AbortController();
     abortRef.current = controller;
-    try { await streamMessage(token, target, { content, deep_thinking: thinking, web_search: searching, agent_tools: !!workspaceRoot, permission_mode: permissionMode, attachments: sentAttachments }, (event) => {
+    try { await streamMessage(token, target, { content, deep_thinking: thinking, web_search: searching, agent_tools: !!workspaceRoot, permission_mode: permissionMode, multi_agent: multiAgent, attachments: sentAttachments }, (event) => {
+      // 事件按来源分流：Friday（主 Agent）进主回答/主思考/主 chip 行；成员
+      // （检索员/执行员）的思考与汇报进各自的打字机缓冲、chip 进 meta.agentTraces，
+      // 由「协作过程」面板分组展示
+      const worker = event.agent && event.agent !== 'Friday' ? event.agent : '';
+      const workerBuffer = () => (agentBuffers.current[worker] || (agentBuffers.current[worker] = { text: '', thinking: '' }));
       // 流首 sent 事件：把乐观渲染的本地 id 替换成库中真实 id，编辑重发的截断才能按 id 定位
       if (event.type === 'sent' && event.message_id) { setMessages((old) => old.map((row) => row.id === userMessage.id ? { ...row, id: event.message_id! } : row)); return; }
-      if (event.type === 'thinking') thinkingBuffer.current += event.content || '';
-      else if (event.type === 'text') { setToolRunning(false); streamBuffer.current += event.content || ''; }
-      else if (event.type === 'tool_call') { setToolRunning(true); setRunningTool(event.name || ''); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, toolCalls: [...((row.meta?.toolCalls as ToolCall[]) || []), { name: event.name || 'medical_rag_search', query: event.query }] } } : row)); }
-      else if (event.type === 'permission_ask') { setToolRunning(false); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, permissionAsk: { calls: event.calls || [], status: 'pending' } as PermissionAsk } } : row)); }
+      if (event.type === 'thinking') { if (worker) workerBuffer().thinking += event.content || ''; else thinkingBuffer.current += event.content || ''; }
+      else if (event.type === 'text') { setToolRunning(false); if (worker) workerBuffer().text += event.content || ''; else streamBuffer.current += event.content || ''; }
+      else if (event.type === 'tool_call') {
+        setToolRunning(true); setRunningTool(event.name || ''); setRunningAgent(event.agent || '');
+        const entry: ToolCall = { name: event.name || 'medical_rag_search', query: event.query, agent: event.agent };
+        if (worker) {
+          setMessages((old) => old.map((row) => {
+            if (row.id !== assistantId) return row;
+            const traces = [...((row.meta?.agentTraces as AgentTrace[]) || [])];
+            const index = traces.findIndex((trace) => trace.name === worker);
+            const base = index >= 0 ? traces[index] : { name: worker, text: '', thinking: '', toolCalls: [] as ToolCall[] };
+            const next = { ...base, toolCalls: [...(base.toolCalls || []), entry] };
+            if (index >= 0) traces[index] = next; else traces.push(next);
+            return { ...row, meta: { ...row.meta, agentTraces: traces } };
+          }));
+        } else {
+          setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, toolCalls: [...((row.meta?.toolCalls as ToolCall[]) || []), entry] } } : row));
+        }
+      }
+      else if (event.type === 'permission_ask') { setToolRunning(false); setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, permissionAsk: { calls: event.calls || [], status: 'pending', agent: event.agent } as PermissionAsk } } : row)); }
       else if (event.type === 'permission_resolved') { setMessages((old) => old.map((row) => row.id === assistantId ? { ...row, meta: { ...row.meta, permissionAsk: { ...(((row.meta?.permissionAsk as PermissionAsk) || { calls: [] })), status: event.approved ? 'approved' : (event.timed_out ? 'timeout' : 'denied') } as PermissionAsk } } : row)); }
     }, controller.signal); } catch (error) {
       // 用户主动中止不算错误：保留已生成的部分并标记
@@ -604,7 +724,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
         skipNextDrainRef.current = true; // 出错后不自动续发队列，避免连环失败
         message.error(error instanceof Error ? error.message : '发送失败');
       }
-    } finally { abortRef.current = null; streamDone.current = true; await flushed; busyRef.current = false; setLoading(false); setStreamingId(null); setToolRunning(false); drainQueue(); }
+    } finally { abortRef.current = null; streamDone.current = true; await flushed; busyRef.current = false; setLoading(false); setStreamingId(null); setToolRunning(false); setRunningAgent(''); drainQueue(); }
   };
 
   // 权限确认卡片应答：先乐观置状态防重复点击，再调确认接口；后端随后的
@@ -755,6 +875,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                 const thinkingText = (item.meta?.thinking as string) || '';
                 const isStreamingThis = item.id === streamingId;
                 const thinkingExpanded = thinkingOpen[item.id] ?? isStreamingThis;
+                const agentTraces = (item.meta?.agentTraces as AgentTrace[]) || [];
+                const traceExpanded = traceOpen[item.id] ?? isStreamingThis;
                 return (
                   <div key={item.id} className="msg-in flex gap-3">
                     <div className="min-w-0 flex-1">
@@ -766,6 +888,14 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                       {(item.meta?.permissionAsk as PermissionAsk | undefined)?.calls?.length ? (
                         <PermissionCard ask={item.meta!.permissionAsk as PermissionAsk} onConfirm={answerPermission} />
                       ) : null}
+                      {agentTraces.length > 0 && (
+                        <AgentTracesPanel
+                          traces={agentTraces}
+                          streaming={isStreamingThis}
+                          open={traceExpanded}
+                          onToggle={() => setTraceOpen((old) => ({ ...old, [item.id]: !traceExpanded }))}
+                        />
+                      )}
                       {thinkingText && (
                         <ThinkingPanel
                           text={thinkingText}
@@ -779,7 +909,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                           <Markdown streaming={isStreamingThis}>{item.content}</Markdown>
                           {isStreamingThis && toolRunning && (
                             <div className="mt-1">
-                              <StreamingHint label={BUILTIN_TOOL_NAMES.has(runningTool) ? '正在执行' : '正在检索'} />
+                              <StreamingHint label={toolRunningLabel(runningTool, runningAgent)} />
                             </div>
                           )}
                           <div className="mt-2 flex gap-1 text-xs text-muted-weak">
@@ -795,7 +925,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                           </div>
                         </div>
                       ) : (
-                        <StreamingHint label={isStreamingThis && toolRunning ? (BUILTIN_TOOL_NAMES.has(runningTool) ? '正在执行' : '正在检索') : '正在思考'} />
+                        <StreamingHint label={isStreamingThis && toolRunning ? toolRunningLabel(runningTool, runningAgent) : '正在思考'} />
                       )}
                       {item.meta?.stopped ? <div className="mt-2 text-xs text-muted-weak">已停止生成</div> : null}
                     </div>
@@ -899,6 +1029,15 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: str
                 className={`rounded-full border px-3 py-1 text-xs ${searching ? 'border-[#4d6bfe] bg-brand-soft text-brand-text' : 'border-line-strong text-weak'}`}
               >
                 <GlobalOutlined /> 联网搜索
+              </button>
+            )}
+            {SHOW_MULTI_AGENT && (
+              <button
+                title="开启后由团队协作完成：Friday 规划派活，检索员/执行员分别负责检索与文件命令执行"
+                onClick={() => setMultiAgent(!multiAgent)}
+                className={`rounded-full border px-3 py-1 text-xs ${multiAgent ? 'border-[#4d6bfe] bg-brand-soft text-brand-text' : 'border-line-strong text-weak'}`}
+              >
+                <TeamOutlined /> 多 Agent
               </button>
             )}
             {workspaceRoot && (

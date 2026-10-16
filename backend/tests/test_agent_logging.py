@@ -22,7 +22,8 @@ from app.agent_logging import AgentLoggingMiddleware
 
 
 def _fake_agent():
-    return SimpleNamespace(state=SimpleNamespace(session_id="sess-1"))
+    # name 对应真实 Agent 的属性（多智能体改造后节点日志按 agent 名区分来源）
+    return SimpleNamespace(name="Friday", state=SimpleNamespace(session_id="sess-1"))
 
 
 def _tool_call(name="web_search", call_id="call-1", raw_input='{"query": "哮喘"}'):

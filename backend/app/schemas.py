@@ -84,6 +84,9 @@ class ChatRequest(BaseModel):
     web_search: bool = False
     # Agent 内置工具（Bash/文件/任务）：需服务端 AGENT_TOOLS_ENABLED 同时开启才生效
     agent_tools: bool = False
+    # 多智能体协作（leader 规划派活 + 检索员/执行员执行）：需服务端 MULTI_AGENT_ENABLED
+    # 同时开启；带图请求自动退回单 Agent 视觉档
+    multi_agent: bool = True
     # 内置工具的权限模式（仅 agent_tools 开启时有意义）：default=未授权操作弹确认
     # （需前端确认卡片应答），accept_edits=工作区写入免确认其余弹确认，
     # explore=只读，dont_ask=未授权直接拒绝（无人值守）。BYPASS 不开放。

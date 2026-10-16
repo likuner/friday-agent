@@ -49,8 +49,8 @@ class AgentLoggingMiddleware(MiddlewareBase):
         async for item in next_handler(**input_kwargs):
             yield item
         logger.info(
-            "节点[Agent返回] 模型流结束 rounds=%s input_tokens=%s output_tokens=%s 耗时=%.2fs session=%s",
-            self._round, self._input_tokens, self._output_tokens,
+            "节点[Agent返回] agent=%s 模型流结束 rounds=%s input_tokens=%s output_tokens=%s 耗时=%.2fs session=%s",
+            agent.name, self._round, self._input_tokens, self._output_tokens,
             time.perf_counter() - start, agent.state.session_id,
         )
 
@@ -66,15 +66,15 @@ class AgentLoggingMiddleware(MiddlewareBase):
             event_type = getattr(event, "type", None)
             if event_type == EventType.MODEL_CALL_START:
                 logger.info(
-                    "节点[模型调用] round=%s model=%s session=%s",
-                    self._round, event.model_name, agent.state.session_id,
+                    "节点[模型调用] round=%s agent=%s model=%s session=%s",
+                    self._round, agent.name, event.model_name, agent.state.session_id,
                 )
             elif event_type == EventType.MODEL_CALL_END:
                 self._input_tokens += event.input_tokens
                 self._output_tokens += event.output_tokens
                 logger.info(
-                    "节点[模型返回] round=%s input_tokens=%s output_tokens=%s cache_read=%s cache_write=%s finished=%s",
-                    self._round, event.input_tokens, event.output_tokens,
+                    "节点[模型返回] round=%s agent=%s input_tokens=%s output_tokens=%s cache_read=%s cache_write=%s finished=%s",
+                    self._round, agent.name, event.input_tokens, event.output_tokens,
                     event.cache_input_tokens, event.cache_creation_input_tokens,
                     event.finished_reason,
                 )
@@ -98,8 +98,8 @@ class AgentLoggingMiddleware(MiddlewareBase):
                 yield item
             return
         logger.info(
-            "节点[工具调用] model 自主决策调用工具 name=%s call_id=%s args=%s",
-            tool_call.name, tool_call.id, (tool_call.input or "")[:200],
+            "节点[工具调用] agent=%s 自主决策调用工具 name=%s call_id=%s args=%s",
+            agent.name, tool_call.name, tool_call.id, (tool_call.input or "")[:200],
         )
         start = time.perf_counter()
         last_item = None

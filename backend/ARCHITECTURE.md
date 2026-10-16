@@ -129,10 +129,10 @@ backend/
 | type | 字段 | 含义 | 前端处理 |
 | --- | --- | --- | --- |
 | `sent` | `message_id` | 流首事件：用户消息落库后的真实 id（chat.py 直发，非 agent 事件） | 替换乐观渲染的本地 id（编辑重发按 id 截断的前提） |
-| `text` | `content` | 正文增量（token 级） | 进打字机缓冲，逐步上屏 |
-| `thinking` | `content` | 深度思考增量 | 单独收集，折叠展示（不入正文） |
-| `tool_call` | `name`, `query` | 模型发起了工具调用（`query` 为解析出的检索词/命令/文件路径摘要） | 渲染检索 chip：`medical_rag_search` →「已检索」，`web_search` →「联网搜索」，内置工具按名映射 |
-| `permission_ask` | `reply_id`, `calls[]` | 权限 ASK：本轮 parked，等前端确认（DEFAULT/ACCEPT_EDITS 模式） | 渲染确认卡片（允许 / 总是允许 / 拒绝），应答走 `POST /permissions/confirm` |
+| `text` | `content`, `agent` | 正文增量（token 级）；`agent` 标记来源——Friday（主 Agent）的正文是主回答，成员（检索员/执行员）的汇报进「协作过程」轨迹面板 | Friday 进打字机缓冲上屏；成员进各 agent 的分组缓冲，逐字上屏到 `meta.agentTraces` |
+| `thinking` | `content`, `agent` | 深度思考增量 | 单独收集，折叠展示（不入正文） |
+| `tool_call` | `name`, `query`, `agent` | 模型发起了工具调用（`query` 为解析出的检索词/命令/文件路径/委派成员名摘要） | Friday 的调用渲染主 chip 行（`TeamAssign` →「已委派：成员名」）；成员的 chip 进其轨迹面板，`agent ≠ Friday` 时 chip 前缀成员名 |
+| `permission_ask` | `reply_id`, `calls[]`, `agent` | 权限 ASK：本轮 parked，等前端确认（DEFAULT/ACCEPT_EDITS 模式） | 渲染确认卡片（允许 / 总是允许 / 拒绝），应答走 `POST /permissions/confirm` |
 | `permission_resolved` | `approved`, `timed_out` | 确认已处理（应答或超时自动拒绝），流即将续跑 | 卡片置为已允许 / 已拒绝 / 超时状态 |
 | `done` | `message_id` | 流正常结束（assistant 消息已落库） | 解除 loading |
 | `error` | `content` | 服务端异常 | `message.error` 提示 |
@@ -160,7 +160,8 @@ backend/
 
 ### 4.4 agent 相关模块的关键实现点
 
-- **按开关组合装配**（每轮重建，`agent_factory.build_agent()`）：AgentService 无状态，
+- **按开关组合装配**（每轮重建，`agent_factory.build_agent()`；多智能体开关全开时
+  改走 `agent_factory.build_team()` 组建 TeamPipeline，见 §4.7）：AgentService 无状态，
   每轮请求按开关组合现建一次性 Agent（独立 Toolkit 与对话状态，记忆的唯一事实来源是
   数据库）。普通对话用 `llm_model`（deepseek-v4-pro）；
   「深度思考」打开且配置了 `llm_thinking_model`（deepseek-v4-pro）时切换到
@@ -219,6 +220,45 @@ backend/
   两个请求并发（`kind=workspace` / `kind=plain`），互不影响；
 - 历史记录页：输入框 300ms 防抖后把关键词作为 `q` 发服务端；请求带序号，
   搜索词变化后旧响应一律丢弃，避免慢响应覆盖新结果。
+
+### 4.7 多智能体编排（multi_agent 开关，agent_factory.build_team）
+
+请求侧 `ChatRequest.multi_agent`（默认开，前端「多 Agent」toggle）× 服务端
+`MULTI_AGENT_ENABLED`（总闸，紧急一键回退单 Agent）共同决定是否组建团队；
+带图请求恒走单 Agent 视觉档。组建条件全满足才走 `build_team()`，否则
+`build_agent()` 老路原样保留（零回归）。
+
+- **编排模式**：AgentScope `TeamPipeline`（leader-worker）。leader = Friday
+  （SYSTEM_PROMPT + 长期记忆 + LEADER_TEAM_PROMPT），通过 pipeline 自动注册的
+  `TeamAssign(member, prompt)` 外部工具派活；成员最终回复作为工具结果回填 leader，
+  leader 只见摘要不见中间步骤。同一轮多个委派**跨成员并发**、同成员串行；
+- **成员裁剪**（`build_team()`）：检索员随 MCP 可用性恒在——`web_search` 开关只控制
+  是否多挂联网搜索这一个工具，不影响成员存在（与单 Agent 的 MCP 白名单一致）；
+  执行员仅 `agent_tools` 开启时组建（内置工具 + permission_context 挂其 AgentState）。
+  成员用基础档 `llm_model`，深度思考档只给 leader；
+- **权限确认**：成员内工具 ASK 产出的 `REQUIRE_USER_CONFIRM` 由 pipeline 按
+  `reply_id` 路由回对应成员续跑，`agent.py` 的 park/resume 循环不感知多 Agent。
+  当前能 ASK 的只有执行员（检索员工具只读自动放行、TeamAssign 恒 ALLOW），
+  ConfirmHub 每会话单 pending 的约束依然成立；**未来若加入可 ASK 的第二成员，
+  confirm.py 需把 key 细化到 reply_id 级**（并发双 ASK 会互相覆盖）；
+- **事件归属**（agent_events.py）：TeamPipeline 转发事件不带 agent 身份（只有
+  reply_id），事后按 `AgentState.reply_id` 反查有竞态（同成员顺序两个委派时消费侧
+  处理旧事件、state 已指向新回复）。解法是 `AgentTagMiddleware` 挂在每个 Agent 的
+  事件出口（on_reply 钩子），在事件产生现场把 reply_id → agent 名写入共享注册表，
+  `ReplyEventTranslator` 翻译时附加到 SSE `agent` 字段（单 Agent 模式无注册表恒为
+  Friday，协议形态一致）；
+- **记忆与回放**：历史只 observe 给 leader（成员每轮全新，`reset_members=True`）；
+  成员中间消息不落库、不进回放窗口——最终落库的仍是 user/assistant 两条，
+  `context.py`/`agent_messages.py` 的回放校验零改动；
+- **协作过程展示**（chat.py 按 agent 分流收集 + 前端「协作过程」面板）：Friday 的
+  正文/思考/工具进主字段（`content`/`meta.thinking`/`meta.toolCalls`，其中
+  `TeamAssign` 以「已委派：成员名」chip 呈现）；成员的思考/调用/汇报文本归入
+  `meta.agentTraces`（`[{name, text, thinking, toolCalls}]`，dict 保序即面板顺序）。
+  前端 ChatWorkspace 的 `AgentTracesPanel` 按成员分组折叠展示（流式期间自动展开、
+  结束后折叠），刷新/重进会话时从 meta 还原；单 Agent 模式 `agentTraces` 恒为空，
+  行为不变；
+- **token 成本**：默认开意味着每轮 prompt 多出成员描述 + TeamAssign 工具；
+  leader 对简单问题可不委派直接回答，成本可控但非零，关 toggle 即回到单 Agent。
 
 ---
 
@@ -333,7 +373,8 @@ messages(id, conversation_id, role, content Text, meta JSONB, created_at)
 | --- | --- | --- |
 | `attachments` | chat.py（用户消息） | 图片文件名列表 |
 | `deep_thinking` / `web_search` | chat.py（助手消息） | 模式开关 |
-| `toolCalls` | chat.py（助手消息） | `[{name, query}]` 工具调用记录 |
+| `toolCalls` | chat.py（助手消息） | `[{name, query, agent}]` Friday 的工具调用记录（`TeamAssign` 的 query 是被委派成员名；成员的调用在 `agentTraces` 里） |
+| `agentTraces` | chat.py（助手消息） | `[{name, text, thinking, toolCalls}]` 多智能体协作轨迹：每位成员（检索员/执行员）的汇报文本、思考与调用记录，供「协作过程」面板展示；单 Agent 模式无此键 |
 | `thinking` | chat.py（助手消息） | 深度思考全文 |
 | `stopped` | chat.py `_save_partial` | 中止标记 |
 

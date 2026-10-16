@@ -13,13 +13,18 @@ export class ApiError extends Error {
 export type User = { id: string; username: string };
 export type Conversation = { id: string; title: string; created_at: string; updated_at: string; message_count: number; last_message?: string | null; workspace_root?: string | null; permission_mode?: string | null };
 export type Message = { id: string; role: 'user' | 'assistant'; content: string; meta: Record<string, unknown>; created_at: string };
-// 一条工具调用记录（meta.toolCalls 的元素）；query 是本次实际检索词
-export type ToolCall = { name: string; query?: string };
+// 一条工具调用记录（meta.toolCalls 的元素）；query 是本次实际检索词，
+// agent 是调用方归属（多智能体模式的「检索员/执行员」，单 Agent 恒为 Friday）
+export type ToolCall = { name: string; query?: string; agent?: string };
+// 多智能体协作轨迹（meta.agentTraces 的元素）：一位成员的思考/工具调用/汇报文本
+export type AgentTrace = { name: string; text?: string; thinking?: string; toolCalls?: ToolCall[] };
 // permission_ask / permission_resolved / sent / tool_call 等 SSE 事件并集。
-// reply_id 是服务端 parked reply 的关联标识（协议字段，供排查对账，前端不消费）
-export type StreamEvent = { type: string; content?: string; name?: string; query?: string; message_id?: string; reply_id?: string; calls?: { id: string; name: string; query?: string }[]; approved?: boolean; timed_out?: boolean };
-// 权限确认卡片状态（SSE permission_ask / permission_resolved 事件驱动）
-export type PermissionAsk = { calls: { id: string; name: string; query?: string }[]; status: 'pending' | 'approved' | 'denied' | 'timeout' };
+// reply_id 是服务端 parked reply 的关联标识（协议字段，供排查对账，前端不消费）；
+// agent 标记事件来源（text/thinking/tool_call/permission_ask 携带）
+export type StreamEvent = { type: string; content?: string; name?: string; query?: string; agent?: string; message_id?: string; reply_id?: string; calls?: { id: string; name: string; query?: string }[]; approved?: boolean; timed_out?: boolean };
+// 权限确认卡片状态（SSE permission_ask / permission_resolved 事件驱动）；
+// agent 标记发起确认的来源（多智能体模式的执行员等，缺省 Friday）
+export type PermissionAsk = { calls: { id: string; name: string; query?: string }[]; status: 'pending' | 'approved' | 'denied' | 'timeout'; agent?: string };
 // 上传后的图片附件（后端返回的 name 即文件名）
 export type UploadedFile = { name: string; url: string; size: number };
 export type ConversationDetail = Conversation & { messages: Message[] };

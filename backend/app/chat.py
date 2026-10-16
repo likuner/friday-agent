@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .agent import agent_service
+from .agent_events import DEFAULT_AGENT_NAME
 from .auth import current_user
 from .config import settings
 from .confirm import confirm_hub
@@ -102,11 +103,38 @@ async def chat(
         asyncio.create_task(extract_user_memory(conversation.id, user.id))
 
     async def generate() -> AsyncIterator[str]:
+        # 按 agent 分流收集：Friday（主 Agent）的正文/思考/工具进主字段——单 Agent
+        # 模式全部事件都是 Friday，行为不变；成员（检索员/执行员）的轨迹进
+        # agent_traces 落 meta.agentTraces，前端「协作过程」面板分组展示
         answer: list[str] = []
         thinking: list[str] = []
         tool_calls: list[dict[str, str]] = []
+        agent_traces: dict[str, dict[str, object]] = {}
         event_count = 0
         started = time.monotonic()
+
+        def _trace(name: str) -> dict[str, object]:
+            """成员轨迹（首次出现即建档，dict 保序即面板展示序）。"""
+            return agent_traces.setdefault(
+                name, {"name": name, "text": "", "thinking": "", "toolCalls": []}
+            )
+
+        def _meta(stopped: bool = False) -> dict:
+            meta: dict = {
+                "deep_thinking": payload.deep_thinking,
+                "web_search": payload.web_search,
+                # 请求级多智能体标记（实际是否组建团队由服务端开关/带图退化决定，
+                # 真实归属看 toolCalls[].agent / agentTraces）
+                "multiAgent": payload.multi_agent,
+                "toolCalls": tool_calls,
+                "thinking": "".join(thinking),
+            }
+            if agent_traces:
+                meta["agentTraces"] = list(agent_traces.values())
+            if stopped:
+                meta["stopped"] = True
+            return meta
+
         logger.info("节点[流式开始] conversation=%s", conversation.id)
         try:
             # 流首事件：回传用户消息落库后的真实 id。前端发送时用本地随机 id 乐观渲染，
@@ -125,15 +153,31 @@ async def chat(
                 permission_mode=permission_mode,
                 workspace_root=workspace_root,
                 user_id=user.id,
+                multi_agent=payload.multi_agent,
             ):
-                # 思考过程单独收集，不混进正文，前端才能折叠展示
-                if event.get("type") == "thinking":
-                    thinking.append(event.get("content", ""))
-                else:
-                    answer.append(event.get("content", ""))
                 event_count += 1
-                if event.get("type") == "tool_call":
-                    tool_calls.append({"name": event.get("name", ""), "query": event.get("query", "")})
+                etype = event.get("type")
+                source = event.get("agent") or DEFAULT_AGENT_NAME
+                is_main = source == DEFAULT_AGENT_NAME
+                if etype == "thinking":
+                    if is_main:
+                        thinking.append(event.get("content", ""))
+                    else:
+                        _trace(source)["thinking"] += event.get("content", "")
+                elif etype == "text":
+                    if is_main:
+                        answer.append(event.get("content", ""))
+                    else:
+                        _trace(source)["text"] += event.get("content", "")
+                elif etype == "tool_call":
+                    entry = {"name": event.get("name", ""), "query": event.get("query", ""), "agent": source}
+                    if is_main:
+                        tool_calls.append(entry)
+                    else:
+                        _trace(source)["toolCalls"].append(entry)
+                elif is_main:
+                    # 其余事件（演示模式 search 等）历史上并入正文，保持行为
+                    answer.append(event.get("content", ""))
                 # 暂时关闭流式 delta 逐条事件日志（噪音大，需要时取消注释即可恢复）
                 # logger.debug(
                 #     "节点[模型事件] conversation=%s seq=%s type=%s delta=%r",
@@ -145,13 +189,8 @@ async def chat(
                 conversation_id=conversation.id,
                 role="assistant",
                 content="".join(answer),
-                # toolCalls / thinking 一并入库，刷新或重新进入会话时不会丢
-                meta={
-                    "deep_thinking": payload.deep_thinking,
-                    "web_search": payload.web_search,
-                    "toolCalls": tool_calls,
-                    "thinking": "".join(thinking),
-                },
+                # toolCalls / thinking / agentTraces 一并入库，刷新或重新进入会话时不会丢
+                meta=_meta(),
             )
             db.add(assistant)
             await db.commit()
@@ -169,13 +208,7 @@ async def chat(
             # 保证保存任务不被这次取消打断），随后继续向上传播取消。
             partial = "".join(answer)
             if partial:
-                meta = {
-                    "deep_thinking": payload.deep_thinking,
-                    "web_search": payload.web_search,
-                    "toolCalls": tool_calls,
-                    "thinking": "".join(thinking),
-                    "stopped": True,
-                }
+                meta = _meta(stopped=True)
                 task = asyncio.create_task(_save_partial(conversation.id, partial, meta))
                 try:
                     await asyncio.shield(task)
