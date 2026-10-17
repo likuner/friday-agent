@@ -1,20 +1,15 @@
-"""skills/ 目录与 AgentScope skill 注册单测：SKILL.md 可被加载、Toolkit 暴露
-Skill 元工具并产出系统提示注入块。风格沿用 test_agent_tools.py——asyncio.run
-包同步用例。"""
+"""skills/ 目录与技能加载单测：SKILL.md 可被发现、<agent-skills> 注入块与
+Skill 元工具可用。自研加载器（crew_skills）复刻原 AgentScope 行为。"""
 
-import asyncio
 from pathlib import Path
 
-from agentscope.skill import LocalSkillLoader
-from agentscope.tool import Toolkit
-
-from app.agent_skills import SKILL_LOADER
+from app.crew_skills import SkillTool, list_skills, skill_instructions, skill_tool
 
 MEDICAL = "medical-literature-search"
 
 
-def load_skills() -> dict[str, object]:
-    return {skill.name: skill for skill in asyncio.run(SKILL_LOADER.list_skills())}
+def load_skills(directory: Path | None = None) -> dict[str, object]:
+    return {skill.name: skill for skill in list_skills(directory)}
 
 
 class TestSkillLoading:
@@ -35,41 +30,46 @@ class TestSkillLoading:
         for word in ("疾病", "症状", "诊断", "治疗", "用药", "健康"):
             assert word in description, f"触发词缺失：{word}"
 
-
-class TestToolkitIntegration:
-    def test_skill_viewer_and_instructions(self):
-        async def scenario():
-            toolkit = Toolkit(skills_or_loaders=[SKILL_LOADER])
-            schemas = await toolkit.get_tool_schemas()
-            instructions = await toolkit.get_skill_instructions()
-            return schemas, instructions
-
-        schemas, instructions = asyncio.run(scenario())
-        names = {schema["function"]["name"] for schema in schemas}
-        # 有技能注册时框架自动暴露只读元工具 Skill，供模型按需读取全文
-        assert "Skill" in names
-        assert instructions is not None
-        assert "<agent-skills>" in instructions
-        assert MEDICAL in instructions
-
     def test_scan_subdir_finds_nested_skill_md(self, tmp_path):
-        # agent_skills.py 用 scan_subdir=True 支撑「一个技能一个子目录」布局
+        # 一个技能一个子目录布局
         (tmp_path / "demo-skill").mkdir()
         (tmp_path / "demo-skill" / "SKILL.md").write_text(
             "---\nname: demo-skill\ndescription: 演示技能\n---\n# 演示",
             encoding="utf-8",
         )
-
-        async def scenario():
-            loader = LocalSkillLoader(directory=str(tmp_path), scan_subdir=True)
-            return await loader.list_skills()
-
-        skills = asyncio.run(scenario())
+        skills = list_skills(tmp_path)
         assert [skill.name for skill in skills] == ["demo-skill"]
 
-    def test_empty_dir_degrades_to_no_skills(self, tmp_path):
-        async def scenario():
-            loader = LocalSkillLoader(directory=str(tmp_path / "missing"), scan_subdir=True)
-            return await loader.list_skills()
+    def test_missing_fields_skill_skipped(self, tmp_path):
+        (tmp_path / "bad-skill").mkdir()
+        (tmp_path / "bad-skill" / "SKILL.md").write_text(
+            "---\nname: bad-skill\n---\n# 缺 description", encoding="utf-8"
+        )
+        assert list_skills(tmp_path) == []
 
-        assert asyncio.run(scenario()) == []
+    def test_empty_dir_degrades_to_no_skills(self, tmp_path):
+        assert list_skills(tmp_path / "missing") == []
+
+
+class TestSkillInjection:
+    def test_instructions_block(self):
+        instructions = skill_instructions()
+        assert "<agent-skills>" in instructions
+        assert MEDICAL in instructions
+        assert "medical_rag_search" not in instructions  # 全文不占提示词，只列清单
+
+    def test_no_skills_no_block(self, tmp_path):
+        assert skill_instructions(list_skills(tmp_path / "missing")) == ""
+
+    def test_skill_tool_reads_full_markdown(self):
+        tool = skill_tool()
+        assert isinstance(tool, SkillTool)
+        body = tool._run(skill=MEDICAL)
+        assert "medical_rag_search" in body
+
+    def test_skill_tool_unknown_name_errors(self):
+        tool = skill_tool()
+        assert tool._run(skill="nope").startswith("Error")
+
+    def test_no_skills_no_tool(self, tmp_path):
+        assert skill_tool(list_skills(tmp_path / "missing")) is None

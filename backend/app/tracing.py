@@ -1,23 +1,21 @@
 """OpenTelemetry 追踪初始化。
 
 把 Agent 的运行信息（模型调用、工具调用、Agent 调用、耗时、token 用量等）以标准
-OTLP 协议导出，可直接被 **AgentScope Studio** 可视化，也可接 Jaeger / Langfuse /
-Arize-Phoenix 等任意 OTLP 后端。
+OTLP 协议导出，可接 Jaeger / Langfuse / Arize-Phoenix 等任意 OTLP 后端。
 
 关于接入方式的说明
 ------------------
-AgentScope 1.x 用 ``agentscope.init(studio_url=...)`` 上报；本项目使用的 **2.0.8
-已移除该 API**（包内不再有任何 studio 相关代码）。2.0 改为纯 OpenTelemetry 方案：
-只要配置好全局 ``TracerProvider``，挂在 Agent 上的
-``agentscope.middleware.TracingMiddleware`` 就会自动产出符合
-OpenTelemetry GenAI 语义约定的 span。
+CrewAI 运行时自带 OTLP span 导出（OpenTelemetry GenAI 语义约定）：只要配置
+好全局 ``TracerProvider``，crewai 发出的执行 span 就会自动经 BatchSpanProcessor
+导出到配置的端点。历史注：AgentScope 2.0 曾以 ``TracingMiddleware`` 提供
+同能力，迁移 CrewAI 后由框架内建导出替代（tracing_enabled 默认关闭）。
 
-Studio 侧对外暴露的正是标准 OTLP 端点（见其官方开发文档）：
+标准 OTLP 端点：
 
-- OTLP/gRPC  ``localhost:4317``   —— 可用 ``OTEL_GRPC_PORT`` 调整
-- OTLP/HTTP  ``localhost:3000``   —— 即 Studio 的 Web 端口，可用 ``PORT`` 调整
+- OTLP/gRPC  ``localhost:4317``
+- OTLP/HTTP  ``localhost:4318``（部分后端用 Web 端口，如 Langfuse 的 3000）
 
-因此无需任何 Studio 专用 SDK，按下面的配置指向对应端点即可。
+因此无需任何专用 SDK，按下面的配置指向对应端点即可。
 """
 
 import logging
@@ -32,7 +30,7 @@ _configured = False
 def setup_tracing() -> bool:
     """按配置初始化全局 TracerProvider。
 
-    未启用或依赖缺失时返回 ``False``；此时 ``TracingMiddleware`` 会自动短路，
+    未启用或依赖缺失时返回 ``False``；此时框架侧导出自动短路，
     对调用链几乎没有开销。
     """
     global _configured

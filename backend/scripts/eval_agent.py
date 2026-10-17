@@ -1,14 +1,14 @@
-"""Agent 评测脚本。
+"""Agent 评测脚本（CrewAI 运行时）。
 
 构造医学/非医学用例，验证 Friday Agent 的工具决策与回答质量：
 - 医学问题：模型应自主调用 medical_rag_search 工具，回答非空且含相关关键词；
 - 非医学问题：模型不应调用工具。
 
-每条用例按 AgentService.stream() 的无状态路径现场组装一次性 Agent
-（凭证 + build_agent + MCP 白名单，不带历史回放/内置工具/权限链路），
-运行轨迹用 agentscope 内置的 ConsoleRenderer 做终端可视化（逐事件渲染
-文本增量、思考、工具调用与工具结果）；LLM 裁判需要配置 EVAL_JUDGE_API_KEY，
-未配置时自动跳过。
+每条用例按 AgentService.stream() 的无状态路径现场组装一次性单 Agent
+（build_single + MCP 白名单，不带历史回放/内置工具/权限链路），事件经
+SSEEventBridge 收集（text 增量与工具 chip），--verbose 时把回答全文与
+工具调用打到终端（替代原 agentscope ConsoleRenderer）；LLM 裁判需要配置
+EVAL_JUDGE_API_KEY，未配置时自动跳过。
 
 运行：.venv/bin/python scripts/eval_agent.py [--verbose]
 """
@@ -23,16 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agentscope.console import ConsoleRenderer  # noqa: E402
-from agentscope.credential import DeepSeekCredential  # noqa: E402
-from agentscope.event import EventType  # noqa: E402
-from agentscope.message import UserMsg  # noqa: E402
-from agentscope.state import AgentState  # noqa: E402
+from crewai.events.event_bus import crewai_event_bus  # noqa: E402
 
-from app.agent_factory import build_agent  # noqa: E402
-from app.agent_mcps import mcp_client, probe_mcp_tools  # noqa: E402
-from app.agent_skills import probe_skills  # noqa: E402
 from app.config import settings  # noqa: E402
+from app.crew_agents import build_single  # noqa: E402
+from app.crew_events import SSEEventBridge, StreamHub  # noqa: E402
+from app.crew_mcps import list_mcp_tools, mcp_tools, probe_mcp_tools  # noqa: E402
+from app.crew_skills import probe_skills  # noqa: E402
 
 logger = logging.getLogger("friday.eval_agent")
 
@@ -68,44 +65,52 @@ CASES = [
 ]
 
 
-def eval_credential() -> DeepSeekCredential | None:
-    """与 AgentService.__init__ 相同的凭证装配，未配置时返回 None。"""
-    if settings.model_provider == "deepseek" and settings.llm_api_key:
-        return DeepSeekCredential(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-        )
-    return None
-
-
-async def run_case(case: dict, credential: DeepSeekCredential, index: int, verbose: bool) -> dict:
-    """跑单条用例：每条现场组装一次性 Agent，ConsoleRenderer 实时可视化。"""
+async def run_case(case: dict, index: int, verbose: bool) -> dict:
+    """跑单条用例：每条现场组装一次性单 Agent，事件桥收集回答与工具调用。"""
     # 组装对齐 AgentService.stream()：MCP 白名单只放 medical_rag_search
     # （评测对象），web_search/内置工具/历史回放不参与
-    mcps = None
+    mcp_tool_list = []
     if settings.mcp_server_url:
-        client = mcp_client(["medical_rag_search"])
-        await probe_mcp_tools(client)
-        mcps = [client]
-    await probe_skills()
-    agent = build_agent(
-        credential,
-        settings.llm_model,
-        AgentState(session_id=f"eval-agent-{index}"),
-        mcps=mcps,
-    )
+        specs = await list_mcp_tools(["medical_rag_search"])
+        probe_mcp_tools(specs)
+        mcp_tool_list = mcp_tools(specs)
+    probe_skills()
 
-    renderer = ConsoleRenderer(verbosity="default" if verbose else "quiet")
+    crew, agent_ids = build_single(
+        settings.llm_model, False, [], case["query"],
+        mcp_tool_list=mcp_tool_list or None,
+    )
+    hub = StreamHub()
+    hub.bind()
+    bridge = SSEEventBridge(hub, agent_ids)
+
+    async def _run() -> None:
+        try:
+            await asyncio.to_thread(crew.kickoff)
+        finally:
+            crewai_event_bus.flush(timeout=10.0)
+            hub.close()
+
+    task = asyncio.create_task(_run())
     answer_parts: list[str] = []
     tool_calls: list[str] = []
-
-    async for event in agent.reply_stream(UserMsg(name="user", content=case["query"])):
-        renderer.render(event)
-        if event.type == EventType.TEXT_BLOCK_DELTA:
-            answer_parts.append(event.delta)
-        elif event.type == EventType.TOOL_CALL_START:
-            tool_calls.append(event.tool_call_name)
-
+    try:
+        async for event in hub.events():
+            if event["type"] == "text":
+                answer_parts.append(event["content"])
+                if verbose:
+                    print(event["content"], end="", flush=True)
+            elif event["type"] == "tool_call":
+                tool_calls.append(event["name"])
+                if verbose:
+                    print(f"\n[工具] {event['name']} {event.get('query', '')}", flush=True)
+    finally:
+        hub.stop.set()
+        bridge.close()
+        if not task.done():
+            task.cancel()
+    if verbose:
+        print()
     return {"tool_calls": tool_calls, "answer": "".join(answer_parts)}
 
 
@@ -137,19 +142,18 @@ async def judge_answer(query: str, answer: str) -> float | None:
 async def main() -> None:
     setup_logging()
     verbose = "--verbose" in sys.argv
-    credential = eval_credential()
-    if credential is None:
+    if not (settings.model_provider == "deepseek" and settings.llm_api_key):
         print("Agent 未初始化：请配置 MODEL_PROVIDER=deepseek 与 LLM_API_KEY")
         return
 
-    print(f"\n=== Agent 评测（{len(CASES)} 条用例，agentscope ConsoleRenderer 可视化）===")
+    print(f"\n=== Agent 评测（{len(CASES)} 条用例，CrewAI 事件桥可视化）===")
     started = time.monotonic()
     results = []
     for index, case in enumerate(CASES, 1):
         logger.info("评测[Agent用例开始] %s query=%r", case["name"], case["query"])
         print(f"\n--- 用例：{case['name']}  问题：{case['query']} ---")
 
-        result = await run_case(case, credential, index, verbose)
+        result = await run_case(case, index, verbose)
         answer, tool_calls = result["answer"], result["tool_calls"]
 
         tool_ok = (len(tool_calls) > 0) == case["expect_tool"]

@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.agent_tools import WORKSPACES_DIR, resolve_workspace
+from app.crew_tools import WORKSPACES_DIR, resolve_workspace
 from app.schemas import PermissionModeSetRequest, WorkspaceSetRequest
 from app.workspace_picker import _pick_command, validate_workspace_root
 

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from friday_shared import setup_service_logging
 
-from .agent_tools import WORKSPACES_DIR
+from .crew_tools import WORKSPACES_DIR
 from .auth_routes import router as auth_router
 from .config import settings
 from .conversations import router as conversations_router

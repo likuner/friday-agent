@@ -1,20 +1,23 @@
-fastapi==0.115.6
+--extra-index-url https://pypi.org/simple/
+fastapi>=0.115.6,<1
 uvicorn[standard]==0.34.0
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
-pydantic==2.13.5
-pydantic-settings==2.7.1
-PyJWT==2.10.1
+pydantic>=2.11.9,<2.13
+pydantic-settings>=2.14.2,<3
+PyJWT>=2.15.0,<3
 pwdlib[argon2]==0.2.1
 python-multipart==0.0.20
 Pillow==11.1.0
 httpx==0.28.1
-agentscope==2.0.10
-# 可观测：AgentScope 的 TracingMiddleware 依赖 OpenTelemetry，显式声明避免仅靠传递依赖
+crewai==1.15.*
+# 技能加载（SKILL.md frontmatter 解析），原为 agentscope 传递依赖，现显式声明
+python-frontmatter==1.0.0
+# MCP 客户端（crew 传递依赖，backend 自研直连封装也直接使用，显式声明）
+mcp>=1.26,<2
+# 可观测：事件监听器的手动 span 埋点依赖 OpenTelemetry，显式声明避免仅靠传递依赖
 opentelemetry-sdk==1.44.0
 opentelemetry-exporter-otlp==1.44.0
 opentelemetry-semantic-conventions==0.65b0
-mcp==1.30.0
-openai==1.59.9
 # 共享基础设施（统一日志配置等），editable 安装仓库根 shared/ 包
 -e ../shared

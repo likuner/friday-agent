@@ -50,10 +50,10 @@ class Settings(BaseSettings):
     # Bash 危险命令自动拒绝；非硬隔离（详见 ARCHITECTURE.md 权限模型一节）。
     agent_tools_enabled: bool = True
     workspaces_dir: str = "workspaces"
-    # 多智能体协作（TeamPipeline：leader 规划派活 + 检索员/执行员执行）：
+    # 多智能体协作（CrewAI：leader 规划派活 + 检索员/执行员执行）：
     # 服务端总开关，紧急情况一键回退单 Agent。请求侧还需 ChatRequest.multi_agent
     # 为真且非带图请求才组建团队；成员按开关裁剪（检索员随 MCP 可用性、
-    # 执行员随 agent_tools），见 agent_factory.build_team。
+    # 执行员随 agent_tools），见 crew_agents.build_team。
     multi_agent_enabled: bool = True
     # Bash 命令放行前缀（逗号分隔，子串匹配，如 "open -a,osascript"）：
     # DONT_ASK 模式下非白名单命令一律拒绝；想让 Friday 打开本机应用等场景可显式放行。

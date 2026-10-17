@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .agent_tools import WORKSPACES_DIR, _SENSITIVE_PATTERNS
+from .crew_tools import WORKSPACES_DIR, _SENSITIVE_PATTERNS
 from .auth import current_user
 from .db import get_db
 from .models import Conversation, User

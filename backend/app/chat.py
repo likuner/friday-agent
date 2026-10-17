@@ -12,11 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .agent import agent_service
-from .agent_events import DEFAULT_AGENT_NAME
 from .auth import current_user
 from .config import settings
 from .confirm import confirm_hub
 from .context import build_context_window
+from .crew_events import DEFAULT_AGENT_NAME
 from .db import SessionLocal, get_db
 from .memory import extract_user_memory, load_memory_block, messages_since_extract
 from .models import Conversation, ConversationSetting, Message, User
